@@ -1,0 +1,3600 @@
+"""
+범용 리포트 생성기 (v3 — 단일 상세 PDF, Navy/Gold 디자인)
+
+analysis.json → output/{종목}/report_{종목}_상세.pdf
+  - HTML → PDF (Playwright Chromium)
+  - Cover (1p) + Executive Summary (1p) + 21 섹션 자연 흐름 + Final Call (1p)
+  - Navy (#0b2545) + Gold (#b8922e) 팔레트
+  - 마크다운 풀 파싱 (### 헤딩, **bold**, *italic*, | 표 |, > 인용, - 리스트, ---)
+  - 이모지 자동 strip (★☆ 별점만 보존)
+
+이전 v2: 3개 파일 (상세PDF + 요약PDF + 대시보드HTML) — 폐기
+  · 요약 PDF 생성 함수: _generate_summary_v2 (코드 보존만, 호출 안 됨)
+  · 대시보드 HTML 생성 함수: generate_dashboard (코드 보존만, 호출 안 됨)
+  · Word docx 기반 상세 함수: _generate_detailed_legacy_docx (코드 보존만, 호출 안 됨)
+
+사용법:
+  python scripts/generate_all.py scripts/analysis_{종목명}.json
+"""
+
+import json
+import sys
+import os
+import re
+import html as html_lib
+
+
+def md_table_to_html(txt, table_class=""):
+    """섹션 본문 안의 마크다운 테이블을 HTML 테이블로 변환. 나머지는 <br>로 join."""
+    lines = txt.split('\n')
+    out = []
+    i = 0
+    cls = f' class="{table_class}"' if table_class else ''
+    while i < len(lines):
+        line = lines[i].rstrip()
+        stripped = line.strip()
+        if (stripped.startswith('|') and stripped.endswith('|')
+                and i + 1 < len(lines)
+                and re.match(r'^\s*\|[\s\-:|]+\|\s*$', lines[i+1])):
+            header_cells = [c.strip() for c in stripped.strip('|').split('|')]
+            i += 2
+            body_rows = []
+            while i < len(lines):
+                row_line = lines[i].strip()
+                if row_line.startswith('|') and row_line.endswith('|'):
+                    cells = [c.strip() for c in row_line.strip('|').split('|')]
+                    while len(cells) < len(header_cells):
+                        cells.append('')
+                    body_rows.append(cells[:len(header_cells)])
+                    i += 1
+                else:
+                    break
+            thead = ''.join(f'<th>{html_lib.escape(h)}</th>' for h in header_cells)
+            tbody = ''.join(
+                '<tr>' + ''.join(f'<td>{html_lib.escape(c)}</td>' for c in r) + '</tr>'
+                for r in body_rows
+            )
+            out.append(f'<table{cls}><tr>{thead}</tr>{tbody}</table>')
+            continue
+        if stripped:
+            out.append(html_lib.escape(stripped))
+        i += 1
+    return '<br>'.join(out)
+
+
+# ============================================
+# 1. 상세 리포트 (Word → PDF)
+# ============================================
+# Emoji ranges to drop (★ ☆ are preserved as they're used for star ratings)
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001F9FF"  # misc symbols & pictographs
+    "\U0001FA00-\U0001FAFF"  # extended pictographs
+    "\U0001F000-\U0001F2FF"  # mahjong, playing cards, enclosed
+    "\U0001F600-\U0001F64F"  # emoticons
+    "\U0001F680-\U0001F6FF"  # transport & map
+    "\u2700-\u27BF"          # dingbats (✓ ✗ ✘ ✦ ❌ etc.)
+    "\u2600-\u2604"          # weather (☀ ☁ ☂ ☃)
+    "\u2611-\u2614"          # ballot box, umbrella
+    "\u2620-\u2698"          # warning, peace, etc.
+    "\u26A0-\u26FF"          # ⚠ ⚡ ⚪ ⚫ ⛔ etc.
+    "\uFE0F"                 # variation selector-16
+    "]+",
+    flags=re.UNICODE,
+)
+# Decorative pictographs to explicitly drop (mostly outside or special)
+_EXTRA_DROP_CHARS = "🔴🟠🟡🟢🔵🟣⚫⚪✅❌⚠️🎯🔥💎🏗📊🔍📚📌📈📉💰🎨🚀✨💡🛡⏱👁🛑🛠📑🏷"
+
+def _strip_emoji(text):
+    """Remove emoji and decorative pictographs from text. ★ ☆ are preserved (used in star ratings)."""
+    if not text:
+        return text
+    # Drop known decorative chars first
+    for ch in _EXTRA_DROP_CHARS:
+        text = text.replace(ch, "")
+    # Drop emoji ranges
+    text = _EMOJI_RE.sub("", text)
+    # Collapse extra whitespace introduced by removal
+    text = re.sub(r'[ \t]{2,}', ' ', text)
+    return text
+
+
+def generate_detailed_report(data, output_dir):
+    """v3: HTML 기반 단일 상세 PDF (Navy/Gold 디자인 + 21섹션 전체)."""
+    return _generate_detailed_v3(data, output_dir)
+
+
+def _generate_detailed_legacy_docx(data, output_dir):
+    """Deprecated: legacy docx → PDF generator. Use _generate_detailed_v3 instead."""
+    from docx import Document
+    from docx.shared import Pt, RGBColor, Inches
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.enum.table import WD_TABLE_ALIGNMENT
+
+    meta = data["meta"]
+    price = data["price"]
+    opinion = data["opinion"]
+    sections = data["sections"]
+    fin = data["financials"]
+
+    doc = Document()
+    style = doc.styles['Normal']
+    style.font.name = 'Malgun Gothic'
+    style.font.size = Pt(10)
+
+    def heading(text, level=1):
+        # Strip markdown markers + emoji
+        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+        text = re.sub(r'\*(.+?)\*', r'\1', text)
+        text = _strip_emoji(text)
+        h = doc.add_heading(text, level=level)
+        for run in h.runs:
+            run.font.name = 'Malgun Gothic'
+
+    def para(text, bold=False, size=10):
+        p = doc.add_paragraph()
+        run = p.add_run(text)
+        run.font.name = 'Malgun Gothic'
+        run.font.size = Pt(size)
+        run.bold = bold
+
+    def add_inline_runs(p, text, base_size=10, base_bold=False, base_italic=False):
+        """Parse inline markdown (**bold**, *italic*, `code`) and add as runs.
+        Also strips emojis and decorative pictographs."""
+        if not text:
+            return
+        text = _strip_emoji(text)
+        if not text:
+            return
+        # Split by **bold**, *italic*, `code` while keeping the delimiters
+        parts = re.split(r'(\*\*[^*\n]+?\*\*|`[^`\n]+?`)', text)
+        # Note: avoid *italic* split because it conflicts with ** matching;
+        # handle *...* in a second pass on plain segments
+        for part in parts:
+            if not part:
+                continue
+            if part.startswith('**') and part.endswith('**') and len(part) > 4:
+                run = p.add_run(part[2:-2])
+                run.bold = True
+                run.font.name = 'Malgun Gothic'
+                run.font.size = Pt(base_size)
+                if base_italic:
+                    run.italic = True
+            elif part.startswith('`') and part.endswith('`') and len(part) > 2:
+                run = p.add_run(part[1:-1])
+                run.font.name = 'Consolas'
+                run.font.size = Pt(base_size - 1)
+            else:
+                # Second pass: handle *italic* on plain text
+                sub_parts = re.split(r'(\*[^*\n]+?\*)', part)
+                for sp in sub_parts:
+                    if not sp:
+                        continue
+                    if sp.startswith('*') and sp.endswith('*') and len(sp) > 2:
+                        run = p.add_run(sp[1:-1])
+                        run.italic = True
+                        run.font.name = 'Malgun Gothic'
+                        run.font.size = Pt(base_size)
+                        if base_bold:
+                            run.bold = True
+                    else:
+                        run = p.add_run(sp)
+                        run.font.name = 'Malgun Gothic'
+                        run.font.size = Pt(base_size)
+                        if base_bold:
+                            run.bold = True
+                        if base_italic:
+                            run.italic = True
+
+    def add_md_paragraph(text, base_size=10, base_bold=False, base_italic=False, indent=None):
+        """Add a paragraph that respects inline markdown."""
+        p = doc.add_paragraph()
+        if indent:
+            p.paragraph_format.left_indent = Inches(indent)
+        add_inline_runs(p, text, base_size=base_size, base_bold=base_bold, base_italic=base_italic)
+        return p
+
+    def add_md_heading(text, level=2):
+        """Add a styled subheading from markdown ## or ###."""
+        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+        text = re.sub(r'\*(.+?)\*', r'\1', text)
+        text = _strip_emoji(text)
+        if level <= 2:
+            h = doc.add_heading(text, level=2)
+            for run in h.runs:
+                run.font.name = 'Malgun Gothic'
+        elif level == 3:
+            p = doc.add_paragraph()
+            run = p.add_run(text)
+            run.bold = True
+            run.font.name = 'Malgun Gothic'
+            run.font.size = Pt(12)
+            run.font.color.rgb = RGBColor(13, 71, 161)
+            p.paragraph_format.space_before = Pt(8)
+            p.paragraph_format.space_after = Pt(2)
+        else:
+            p = doc.add_paragraph()
+            run = p.add_run(text)
+            run.bold = True
+            run.font.name = 'Malgun Gothic'
+            run.font.size = Pt(11)
+            p.paragraph_format.space_before = Pt(6)
+
+    def table(headers, rows):
+        t = doc.add_table(rows=1+len(rows), cols=len(headers))
+        t.style = 'Light Grid Accent 1'
+        t.alignment = WD_TABLE_ALIGNMENT.CENTER
+        for i, h in enumerate(headers):
+            # Strip markdown + emoji from header cells
+            clean = re.sub(r'\*\*(.+?)\*\*', r'\1', str(h))
+            clean = re.sub(r'\*(.+?)\*', r'\1', clean)
+            clean = _strip_emoji(clean)
+            t.rows[0].cells[i].text = clean
+        for r_idx, row in enumerate(rows):
+            for c_idx, val in enumerate(row):
+                clean = re.sub(r'\*\*(.+?)\*\*', r'\1', str(val))
+                clean = re.sub(r'\*(.+?)\*', r'\1', clean)
+                clean = _strip_emoji(clean)
+                t.rows[r_idx+1].cells[c_idx].text = clean
+
+    def render_section_content(content):
+        """Render section body. Parses markdown headings, lists, blockquotes, tables, inline emphasis."""
+        if not content:
+            return
+        lines = content.split('\n')
+        i = 0
+        while i < len(lines):
+            line = lines[i].rstrip()
+            stripped = line.strip()
+
+            # Empty line: skip (paragraph break handled by next non-empty)
+            if not stripped:
+                i += 1
+                continue
+
+            # 1. Markdown table
+            if (stripped.startswith('|') and stripped.endswith('|')
+                    and i + 1 < len(lines)
+                    and re.match(r'^\s*\|[\s\-:|]+\|\s*$', lines[i+1])):
+                header_cells = [c.strip() for c in stripped.strip('|').split('|')]
+                i += 2
+                body_rows = []
+                while i < len(lines):
+                    row_line = lines[i].strip()
+                    if row_line.startswith('|') and row_line.endswith('|'):
+                        cells = [c.strip() for c in row_line.strip('|').split('|')]
+                        while len(cells) < len(header_cells):
+                            cells.append('')
+                        body_rows.append(cells[:len(header_cells)])
+                        i += 1
+                    else:
+                        break
+                if body_rows:
+                    table(header_cells, body_rows)
+                    para('')
+                continue
+
+            # 2. Horizontal rule (---) → spacer
+            if re.match(r'^[-=*]{3,}$', stripped):
+                para('')
+                i += 1
+                continue
+
+            # 3. Markdown heading (#, ##, ###, ####)
+            h_match = re.match(r'^(#{1,6})\s+(.+)$', stripped)
+            if h_match:
+                level = len(h_match.group(1))
+                text = h_match.group(2).rstrip('#').strip()
+                add_md_heading(text, level=level)
+                i += 1
+                continue
+
+            # 4. Blockquote (>) → italic indented paragraph
+            if stripped.startswith('>'):
+                # Collect consecutive quote lines
+                quote_lines = []
+                while i < len(lines) and lines[i].strip().startswith('>'):
+                    quote_lines.append(lines[i].strip()[1:].strip())
+                    i += 1
+                quote_text = ' '.join(quote_lines)
+                add_md_paragraph(quote_text, base_size=10, base_italic=True, indent=0.3)
+                continue
+
+            # 5. Bullet list (- or *)
+            if re.match(r'^[-*+]\s+', stripped):
+                text = re.sub(r'^[-*+]\s+', '', stripped)
+                p = doc.add_paragraph(style='List Bullet')
+                add_inline_runs(p, text, base_size=10)
+                i += 1
+                continue
+
+            # 6. Numbered list
+            if re.match(r'^\d+[\.\)]\s+', stripped):
+                text = re.sub(r'^\d+[\.\)]\s+', '', stripped)
+                p = doc.add_paragraph(style='List Number')
+                add_inline_runs(p, text, base_size=10)
+                i += 1
+                continue
+
+            # 7. Plain paragraph (with inline markdown)
+            add_md_paragraph(stripped, base_size=10)
+            i += 1
+
+    # 표지
+    doc.add_paragraph()
+    doc.add_paragraph()
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(f'{meta["stock_name"]} ({meta["stock_code"]})')
+    run.font.size = Pt(28)
+    run.bold = True
+    run.font.color.rgb = RGBColor(13, 71, 161)
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run('Investment Research Report')
+    run.font.size = Pt(16)
+    run.font.color.rgb = RGBColor(21, 101, 192)
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(meta["industry"])
+    run.font.size = Pt(12)
+    run.font.color.rgb = RGBColor(100, 100, 100)
+
+    doc.add_paragraph()
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    cur = f'{meta["currency"]}{price["current"]:,}' if meta["country"] == "KR" else f'${price["current"]:,}'
+    bear_p = f'{meta["currency"]}{opinion["target_bear"]:,}' if meta["country"] == "KR" else f'${opinion["target_bear"]:,}'
+    base_p = f'{meta["currency"]}{opinion["target_base"]:,}' if meta["country"] == "KR" else f'${opinion["target_base"]:,}'
+    bull_p = f'{meta["currency"]}{opinion["target_bull"]:,}' if meta["country"] == "KR" else f'${opinion["target_bull"]:,}'
+    run = p.add_run(f'투자의견: {opinion["rating"]} | 목표주가: {base_p} | 현재가: {cur}')
+    run.font.size = Pt(11)
+    run.bold = True
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(f'투자 성격: {opinion["type"]} | 포트폴리오 역할: {opinion["portfolio_role"]}')
+    run.font.size = Pt(10)
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = p.add_run(f'{meta["date"]} 기준')
+    run.font.size = Pt(10)
+    run.font.color.rgb = RGBColor(150, 150, 150)
+
+    doc.add_page_break()
+
+    # 목차
+    heading('목차', level=1)
+    toc = [
+        '1. 투자의견 & 목표주가', '2. 투자포인트', '3. 회사 개요',
+        '4. 산업 & 시장', '5. 경쟁 구도', '6. 경제적 해자',
+        '7. 경영진', '8. 재무 분석 + Forward 추정',
+        '9. 밸류에이션', '10. 매크로 리스크', '11. 카탈리스트 타임라인',
+        '12. Bear/Base/Bull 시나리오', '13. 투자 논문', '14. 숏 논거 + 반박',
+        '15. 실적 Beat/Miss', '16. 애널리스트 컨센서스',
+        '17. 수급 분석', '18. 주주환원', '19. Trust/Worry/Watch',
+        '20. 실행 계획', '21. 분석 신뢰도'
+    ]
+    for item in toc:
+        para(item, size=10)
+    doc.add_page_break()
+
+    # 핵심 추정 테이블
+    heading('핵심 실적 추정 & 투자 지표', level=1)
+    table(fin["headers"], fin["rows"])
+    para(f'출처: {fin["source"]}', size=8)
+
+    para('')
+    para('사업부별 매출 비중', bold=True, size=11)
+    seg_rows = [[s["name"], f'{s["pct"]}%', s["outlook"]] for s in data["segments"]]
+    table(['사업부', '비중', '전망'], seg_rows)
+
+    doc.add_page_break()
+
+    # 21개 섹션
+    section_titles = {
+        "s01_opinion": "1. 투자의견 & 목표주가",
+        "s02_investment_points": "2. 투자포인트 (Why This Stock Now?)",
+        "s03_company_overview": "3. 회사 개요 / 비즈니스 모델",
+        "s04_industry": "4. 산업 & 시장 분석",
+        "s05_competition": "5. 경쟁 구도 + Peer Comparison",
+        "s06_moat": "6. 경제적 해자 & 경쟁우위",
+        "s07_management": "7. 경영진 분석",
+        "s08_financial": "8. 재무 분석",
+        "s09_valuation": "9. 밸류에이션",
+        "s10_macro": "10. 매크로 리스크 & 민감도",
+        "s11_catalysts": "11. 카탈리스트 타임라인",
+        "s12_scenarios": "12. Bear / Base / Bull 시나리오",
+        "s13_thesis": "13. 투자 논문 (Investment Thesis)",
+        "s14_short_thesis": "14. 숏 논거 3가지 + 반박",
+        "s15_beat_miss": "15. 실적 Beat/Miss 이력",
+        "s16_consensus": "16. 애널리스트 컨센서스 비교",
+        "s17_supply": "17. 수급 분석",
+        "s18_shareholder_return": "18. 주주환원 정책",
+        "s19_trust_worry_watch": "19. Trust / Worry / Watch",
+        "s20_action_plan": "20. 실행 계획",
+        "s21_reliability": "21. 분석 신뢰도 & 한계",
+    }
+
+    for key, title in section_titles.items():
+        heading(title, level=1)
+        content = sections.get(key, "")
+
+        # 카탈리스트는 테이블로
+        if key == "s11_catalysts" and "catalysts" in data:
+            cat_rows = []
+            for c in data["catalysts"]:
+                cat_rows.append([
+                    _strip_emoji(str(c.get("date", ""))),
+                    _strip_emoji(str(c.get("event", ""))),
+                    _strip_emoji(str(c.get("impact", ""))),
+                ])
+            if cat_rows:
+                table(["시기", "이벤트", "영향"], cat_rows)
+            # Also render any narrative content from s11 section
+            if content:
+                para('')
+                render_section_content(content)
+        elif content:
+            render_section_content(content)
+
+        # 8번 섹션에 Forward 추정 테이블 추가
+        if key == "s08_financial":
+            para('')
+            para('Forward 실적 추정', bold=True, size=11)
+            table(fin["headers"], fin["rows"])
+            para(f'출처: {fin["source"]}', size=8)
+
+        # 페이지 나누기 (일부 섹션 후)
+        if key in ("s05_competition", "s08_financial", "s12_scenarios", "s15_beat_miss"):
+            doc.add_page_break()
+
+    # 저장
+    name = meta["stock_name"].replace(" ", "")
+    docx_path = os.path.join(output_dir, f'report_{name}_상세.docx')
+    doc.save(docx_path)
+    print(f'[OK] Word 생성: {docx_path}')
+
+    # PDF 변환
+    try:
+        from docx2pdf import convert
+        pdf_path = os.path.join(output_dir, f'report_{name}_상세.pdf')
+        convert(docx_path, pdf_path)
+        os.remove(docx_path)  # Word 파일 삭제 (PDF만 남김)
+        print(f'[OK] 상세 PDF: {pdf_path} ({os.path.getsize(pdf_path)//1024} KB)')
+    except Exception as e:
+        print(f'[!!] PDF 변환 실패: {e}, Word 파일만 생성됨')
+
+
+# ============================================
+# 2. 요약 리포트 (HTML → PDF)
+# ============================================
+def generate_summary_report(data, output_dir):
+    """Institutional-grade 8-page summary PDF (Navy + Gold palette, NYT/Bloomberg styling)."""
+    return _generate_summary_v2(data, output_dir)
+
+
+# ==========================================================================
+# 2B. INSTITUTIONAL SUMMARY (v2 — Navy/Gold, 8-page fixed layout)
+# ==========================================================================
+_SUMMARY_V2_CSS = r"""
+  @page { size: A4; margin: 0; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: 'Malgun Gothic', 'Apple SD Gothic Neo', 'Noto Sans KR', sans-serif;
+    color: #0a0e1a;
+    font-size: 10pt;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .serif {
+    font-family: Georgia, 'Times New Roman', 'Nanum Myeongjo', serif;
+  }
+  .page {
+    width: 210mm;
+    min-height: 297mm;
+    padding: 20mm 22mm 22mm 22mm;
+    position: relative;
+    page-break-after: always;
+    background: #ffffff;
+  }
+  .page:last-of-type { page-break-after: auto; }
+
+  /* ---------- Running Header ---------- */
+  .running-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 3mm;
+    margin-bottom: 8mm;
+    border-bottom: 1px solid #e4e7ec;
+    font-size: 7.5pt;
+    color: #7a8699;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  .running-header .brand { font-weight: 700; color: #0b2545; letter-spacing: 2.5px; }
+  .running-header .page-num { font-variant-numeric: tabular-nums; }
+
+  /* ---------- Section Caption + Heading ---------- */
+  .section-caption {
+    color: #b8922e;
+    font-size: 8.5pt;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    font-weight: 700;
+    margin-top: 2mm;
+  }
+  .section-heading {
+    font-family: Georgia, 'Times New Roman', serif;
+    font-size: 24pt;
+    font-weight: 300;
+    color: #0b2545;
+    margin: 2mm 0 6mm 0;
+    line-height: 1.15;
+    letter-spacing: -0.3px;
+  }
+  .section-intro {
+    font-size: 10pt;
+    line-height: 1.65;
+    color: #3a4658;
+    margin-bottom: 6mm;
+    max-width: 160mm;
+  }
+
+  /* ---------- Sub heading with gold bar ---------- */
+  .sub-heading {
+    font-size: 11pt;
+    font-weight: 700;
+    color: #0b2545;
+    padding-left: 4mm;
+    border-left: 3px solid #b8922e;
+    margin: 6mm 0 3mm 0;
+    line-height: 1.3;
+  }
+  p { margin: 2mm 0; }
+
+  /* ========== PAGE 1: COVER ========== */
+  .cover {
+    background: linear-gradient(165deg, #0b2545 0%, #0e2b55 45%, #122f5d 100%);
+    color: #f0f3f8;
+    padding: 25mm 22mm 22mm 22mm;
+    min-height: 297mm;
+    position: relative;
+  }
+  .cover::before {
+    content: "";
+    position: absolute;
+    top: 0; right: 0;
+    width: 90mm; height: 90mm;
+    background: radial-gradient(circle at top right, rgba(184,146,46,0.14), transparent 70%);
+    pointer-events: none;
+  }
+  .cover .brand-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 5mm;
+    border-bottom: 1px solid rgba(184,146,46,0.6);
+    font-size: 8.5pt;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    color: #b8922e;
+  }
+  .cover .brand-bar .left { font-weight: 700; }
+  .cover .cover-body { margin-top: 48mm; }
+  .cover .cap-gold {
+    color: #b8922e;
+    font-size: 9pt;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+  .cover h1.stock-title {
+    font-family: Georgia, 'Times New Roman', 'Nanum Myeongjo', serif;
+    font-size: 52pt;
+    font-weight: 300;
+    margin: 5mm 0 3mm 0;
+    line-height: 0.95;
+    color: #ffffff;
+    letter-spacing: -1px;
+  }
+  .cover .stock-meta {
+    font-size: 11pt;
+    color: #b8c3d4;
+    letter-spacing: 1px;
+    font-weight: 300;
+  }
+  .cover .tagline {
+    margin-top: 14mm;
+    font-family: Georgia, serif;
+    font-size: 18pt;
+    font-weight: 300;
+    line-height: 1.35;
+    color: #e0e6f0;
+    max-width: 140mm;
+    font-style: italic;
+  }
+  .cover .pick-box {
+    position: absolute;
+    left: 22mm;
+    right: 22mm;
+    bottom: 42mm;
+    border: 1px solid rgba(184,146,46,0.7);
+    padding: 6mm 7mm;
+    background: rgba(0,0,0,0.18);
+  }
+  .cover .pick-label {
+    color: #b8922e;
+    font-size: 8pt;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+  .cover .pick-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 4mm;
+  }
+  .cover .pick-badge {
+    display: inline-block;
+    padding: 3mm 8mm;
+    font-size: 16pt;
+    font-weight: 700;
+    color: #0b2545;
+    background: #b8922e;
+    letter-spacing: 2px;
+  }
+  .cover .pick-metrics {
+    text-align: right;
+    font-size: 10pt;
+    color: #e0e6f0;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.55;
+  }
+  .cover .pick-metrics .big {
+    font-size: 14pt;
+    font-weight: 600;
+    color: #ffffff;
+  }
+  .cover .cover-footer {
+    position: absolute;
+    left: 22mm;
+    right: 22mm;
+    bottom: 18mm;
+    font-size: 7.5pt;
+    letter-spacing: 1.5px;
+    color: #8593aa;
+    text-transform: uppercase;
+    display: flex;
+    justify-content: space-between;
+    padding-top: 4mm;
+    border-top: 1px solid rgba(184,146,46,0.3);
+  }
+
+  /* ========== Verdict Card ========== */
+  .verdict-card {
+    border: 1px solid #e4e7ec;
+    margin-top: 2mm;
+  }
+  .verdict-head {
+    background: #0b2545;
+    color: #ffffff;
+    padding: 3.5mm 5mm;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 9pt;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  .verdict-head .title { font-weight: 700; }
+  .verdict-rating-badge {
+    background: #b8922e;
+    color: #0b2545;
+    padding: 1.8mm 5mm;
+    font-weight: 700;
+    font-size: 12pt;
+    letter-spacing: 2px;
+  }
+  .verdict-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+  .verdict-cell {
+    padding: 4mm 5mm 4mm 5mm;
+    border-right: 1px solid #e4e7ec;
+    border-bottom: 1px solid #e4e7ec;
+  }
+  .verdict-cell.last-col { border-right: none; }
+  .verdict-cell.last-row { border-bottom: none; }
+  .verdict-cell .lbl {
+    font-size: 7.5pt;
+    color: #7a8699;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 600;
+  }
+  .verdict-cell .val {
+    font-family: Georgia, serif;
+    font-size: 17pt;
+    font-weight: 400;
+    color: #0b2545;
+    margin-top: 1mm;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.15;
+  }
+  .verdict-cell .delta {
+    font-size: 8.5pt;
+    color: #7a8699;
+    margin-top: 0.5mm;
+    font-variant-numeric: tabular-nums;
+  }
+  .verdict-cell .delta.pos { color: #2a6b4a; }
+  .verdict-cell .delta.neg { color: #8b2e2e; }
+
+  /* ========== Core Thesis italic block ========== */
+  .core-thesis {
+    margin-top: 6mm;
+    padding: 5mm 6mm;
+    background: #fafbfc;
+    border-left: 3px solid #b8922e;
+    font-family: Georgia, serif;
+    font-size: 10.5pt;
+    font-style: italic;
+    line-height: 1.7;
+    color: #2a3342;
+  }
+  .core-thesis::before {
+    content: "Core Thesis";
+    display: block;
+    font-family: 'Malgun Gothic', sans-serif;
+    font-size: 7.5pt;
+    color: #b8922e;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    font-weight: 700;
+    margin-bottom: 2mm;
+    font-style: normal;
+  }
+
+  /* ========== KPI Block ========== */
+  .kpi-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 4mm;
+    margin-top: 6mm;
+  }
+  .kpi-block {
+    border-top: 3px solid #0b2545;
+    padding: 3mm 4mm 4mm 4mm;
+    background: #fafbfc;
+  }
+  .kpi-block .lbl {
+    font-size: 7.5pt;
+    color: #7a8699;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 700;
+  }
+  .kpi-block .val {
+    font-family: Georgia, serif;
+    font-size: 24pt;
+    font-weight: 300;
+    color: #0b2545;
+    line-height: 1.1;
+    margin-top: 1mm;
+    font-variant-numeric: tabular-nums;
+  }
+  .kpi-block .note {
+    font-size: 8pt;
+    color: #7a8699;
+    margin-top: 1mm;
+  }
+
+  /* ========== NYT/Bloomberg Table ========== */
+  .nyt {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 9pt;
+    margin: 4mm 0;
+  }
+  .nyt thead tr {
+    border-top: 2px solid #0b2545;
+    border-bottom: 1px solid #0b2545;
+  }
+  .nyt thead th {
+    padding: 2mm 3mm;
+    text-align: left;
+    font-size: 7.5pt;
+    color: #7a8699;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    font-weight: 700;
+  }
+  .nyt thead th.num { text-align: right; }
+  .nyt tbody tr { border-bottom: 1px solid #edf0f4; }
+  .nyt tbody tr:last-child { border-bottom: 2px solid #0b2545; }
+  .nyt tbody td {
+    padding: 2.2mm 3mm;
+    color: #0a0e1a;
+    font-size: 9pt;
+  }
+  .nyt tbody td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum";
+  }
+  .nyt tbody td.name { font-weight: 600; color: #0b2545; }
+  .nyt .bear-row td { color: #8b2e2e; }
+  .nyt .bull-row td { color: #2a6b4a; }
+
+  /* ========== Thesis Points ========== */
+  .thesis-points { margin-top: 4mm; }
+  .thesis-point {
+    margin-bottom: 7mm;
+    padding-left: 11mm;
+    position: relative;
+    padding-bottom: 4mm;
+    border-bottom: 1px solid #edf0f4;
+  }
+  .thesis-point:last-child { border-bottom: none; }
+  .thesis-point .num {
+    position: absolute;
+    left: 0;
+    top: -1mm;
+    font-family: Georgia, serif;
+    color: #b8922e;
+    font-size: 22pt;
+    font-weight: 300;
+    line-height: 1;
+  }
+  .thesis-point .title {
+    font-size: 11.5pt;
+    font-weight: 700;
+    color: #0b2545;
+    margin-bottom: 2mm;
+    line-height: 1.35;
+  }
+  .thesis-point .body {
+    font-size: 9.5pt;
+    line-height: 1.65;
+    color: #2a3342;
+  }
+
+  /* ========== Kill Switch ========== */
+  .kill-switch {
+    margin-top: 5mm;
+    background: #f5eaea;
+    border-left: 4px solid #8b2e2e;
+    padding: 4mm 6mm 5mm 6mm;
+  }
+  .kill-switch .label {
+    font-size: 8pt;
+    color: #8b2e2e;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    font-weight: 700;
+  }
+  .kill-switch .body {
+    margin-top: 2mm;
+    font-size: 9.5pt;
+    line-height: 1.6;
+    color: #3a2020;
+  }
+
+  /* ========== Final Call ========== */
+  .final-call {
+    margin-top: 12mm;
+    border-top: 4px double #0b2545;
+    border-bottom: 4px double #0b2545;
+    padding: 7mm 9mm;
+    position: relative;
+  }
+  .final-call .caption {
+    color: #b8922e;
+    font-size: 8pt;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+  .final-call .conclusion {
+    margin-top: 3mm;
+    font-family: Georgia, serif;
+    font-style: italic;
+    font-size: 13pt;
+    line-height: 1.55;
+    color: #0b2545;
+  }
+  .final-call .signature {
+    margin-top: 5mm;
+    font-size: 8.5pt;
+    color: #7a8699;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* ========== Star Rating ========== */
+  .rr-stars {
+    display: table;
+    width: 100%;
+    margin-top: 4mm;
+    border-top: 1px solid #e4e7ec;
+    border-bottom: 1px solid #e4e7ec;
+  }
+  .rr-stars .row {
+    display: table-row;
+  }
+  .rr-stars .cell {
+    display: table-cell;
+    padding: 3mm 4mm;
+    vertical-align: middle;
+    border-bottom: 1px solid #edf0f4;
+  }
+  .rr-stars .row:last-child .cell { border-bottom: none; }
+  .rr-stars .label-cell {
+    width: 30%;
+    font-size: 9pt;
+    font-weight: 700;
+    color: #0b2545;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+  }
+  .rr-stars .stars-cell {
+    width: 30%;
+    color: #b8922e;
+    font-size: 15pt;
+    letter-spacing: 1mm;
+    line-height: 1;
+  }
+  .rr-stars .stars-cell .dim { color: #e4e7ec; }
+  .rr-stars .value-cell {
+    width: 40%;
+    font-size: 9pt;
+    color: #7a8699;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
+  /* ========== Segment list ========== */
+  .seg-list {
+    margin-top: 3mm;
+    border-top: 1px solid #e4e7ec;
+  }
+  .seg-item {
+    display: flex;
+    align-items: center;
+    padding: 2.5mm 0;
+    border-bottom: 1px solid #edf0f4;
+    font-size: 9pt;
+  }
+  .seg-item .seg-name {
+    width: 38%;
+    font-weight: 600;
+    color: #0b2545;
+  }
+  .seg-item .seg-pct {
+    width: 18%;
+    font-variant-numeric: tabular-nums;
+    color: #0b2545;
+    font-weight: 700;
+  }
+  .seg-item .seg-outlook {
+    flex: 1;
+    font-size: 8.5pt;
+    color: #3a4658;
+  }
+
+  /* ========== Simple two column ========== */
+  .two-col {
+    display: grid;
+    grid-template-columns: 1.1fr 1fr;
+    gap: 7mm;
+    margin-top: 4mm;
+  }
+  .two-col .col > .sub-heading:first-child { margin-top: 0; }
+
+  /* ========== Page footer ========== */
+  .page-footer {
+    position: absolute;
+    left: 22mm;
+    right: 22mm;
+    bottom: 12mm;
+    padding-top: 3mm;
+    border-top: 1px solid #e4e7ec;
+    display: flex;
+    justify-content: space-between;
+    font-size: 7pt;
+    color: #9ca6b5;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+"""
+
+
+def _sv2_extract_points(text, count=3):
+    """Extract top N thesis points from s02. Supports both ### 포인트 N. and **포인트 N.** formats."""
+    if not text:
+        return []
+    text = _strip_emoji(text)
+    # Pattern A: ### 포인트 N. 제목 (markdown heading style)
+    pattern_a = re.compile(
+        r'###\s*\[?(?:Bear|Bull)?\]?\s*포인트\s*(\d+)[\.\)]?\s*([^\n]+)\n+'
+        r'((?:(?!###|---|\Z)[\s\S])+?)(?=###|---|\Z)',
+        re.MULTILINE
+    )
+    matches = pattern_a.findall(text)
+    if not matches:
+        # Pattern B: **포인트 N. 제목** (bold style)
+        pattern_b = re.compile(
+            r'\*\*포인트\s*(\d+)[\.\)]?\s*([^*\n]+?)\*\*\s*\n+'
+            r'((?:(?!\*\*포인트|###)[\s\S])+?)(?=\*\*포인트|###|\Z)',
+            re.MULTILINE
+        )
+        matches = pattern_b.findall(text)
+
+    out = []
+    for m in matches[:count]:
+        num_s, title, body = m
+        # Title: remove markdown emphasis
+        title = re.sub(r'\*\*(.+?)\*\*', r'\1', title)
+        title = re.sub(r'\*(.+?)\*', r'\1', title)
+        title = title.strip()
+        # Body: prefer the "주장" (claim) bullet for the lead, then "근거 숫자"
+        # Strip emphasis
+        body = re.sub(r'\*\*(.+?)\*\*', r'\1', body)
+        body = re.sub(r'`(.+?)`', r'\1', body)
+        # Try to extract claim ("주장:") line if present
+        claim_match = re.search(r'주장\s*[::]\s*([^\n]+)', body)
+        evidence_match = re.search(r'근거\s*숫자\s*[::]\s*([^\n]+)', body)
+        market_missed_match = re.search(r'시장이?\s*놓친\s*것\s*[::]\s*([^\n]+)', body)
+
+        parts = []
+        if claim_match:
+            parts.append(claim_match.group(1).strip())
+        if evidence_match:
+            ev = evidence_match.group(1).strip()
+            if len(ev) > 180:
+                ev = ev[:180].rsplit(' ', 1)[0] + '…'
+            parts.append(ev)
+        if market_missed_match and not parts:
+            parts.append(market_missed_match.group(1).strip())
+
+        if not parts:
+            # Fallback: collapse body to first 260 chars
+            tmp = re.sub(r'^-\s*', '', body, flags=re.MULTILINE)
+            tmp = re.sub(r'\n+', ' ', tmp)
+            tmp = re.sub(r'\s+', ' ', tmp).strip()
+            parts.append(tmp[:260])
+
+        body_clean = ' '.join(parts)
+        if len(body_clean) > 280:
+            body_clean = body_clean[:280].rsplit(' ', 1)[0] + '…'
+
+        # Strip markdown table fragments and trailing pipes
+        body_clean = re.sub(r'\|[^\n]*\|', '', body_clean)
+        body_clean = re.sub(r'\s+', ' ', body_clean).strip()
+        # Remove trailing dots+space artifacts
+        body_clean = re.sub(r'\s*\.{2,}\s*$', '…', body_clean)
+        if len(body_clean) > 280:
+            body_clean = body_clean[:280].rsplit(' ', 1)[0] + '…'
+        out.append({
+            "num": num_s,
+            "title": html_lib.escape(title),
+            "body": html_lib.escape(body_clean),
+        })
+    return out
+
+
+def _sv2_first_para(text, max_len=280, min_len=100):
+    """Extract first meaningful narrative paragraph from a markdown section.
+
+    Skips: headings, tables, code, footnotes (^\\*), labels-only lines, list markers.
+    Joins multiple short paragraphs until reaching min_len for substance.
+    """
+    if not text:
+        return ""
+    text = _strip_emoji(text)
+
+    # Pre-clean: split into paragraph blocks (separated by blank lines)
+    blocks = re.split(r'\n\s*\n', text)
+
+    candidates = []
+    for blk in blocks:
+        # Strip block of all skip-lines
+        clean_lines = []
+        for line in blk.split('\n'):
+            s = line.strip()
+            if not s:
+                continue
+            if s.startswith('#'):  # heading
+                continue
+            if s.startswith('|') or s.startswith('---') or s.startswith('==='):  # table/divider
+                continue
+            if s.startswith('```'):
+                continue
+            if s.startswith('>'):
+                s = s[1:].strip()
+            # Skip footnote lines (^*Foo: ...)
+            if re.match(r'^\*[^*]', s):
+                continue
+            # Strip leading list markers but keep the content
+            s = re.sub(r'^[-*]\s+', '', s)
+            # Skip lines that are just **label**: with empty body
+            if re.fullmatch(r'\*\*[^*]+\*\*\s*[::]?\s*', s):
+                continue
+            clean_lines.append(s)
+        if not clean_lines:
+            continue
+        block_text = ' '.join(clean_lines)
+        # Strip emphasis markers
+        block_text = re.sub(r'\*\*(.+?)\*\*', r'\1', block_text)
+        block_text = re.sub(r'\*(.+?)\*', r'\1', block_text)
+        block_text = re.sub(r'`(.+?)`', r'\1', block_text)
+        # Drop inline table fragments
+        block_text = re.sub(r'\|[^\n]*\|', '', block_text)
+        # Normalize whitespace
+        block_text = re.sub(r'\s+', ' ', block_text).strip()
+        # Skip very short blocks (likely orphan footnote or stub)
+        if len(block_text) < 20:
+            continue
+        candidates.append(block_text)
+
+    if not candidates:
+        return ""
+
+    # Join candidates until reaching min_len for substance
+    joined = ""
+    for c in candidates:
+        if not joined:
+            joined = c
+        elif len(joined) < min_len:
+            joined = joined + ' ' + c
+        else:
+            break
+
+    if len(joined) > max_len:
+        joined = joined[:max_len].rsplit(' ', 1)[0] + '…'
+
+    return html_lib.escape(joined)
+
+
+def _sv2_extract_kill_switch(text, max_len=300):
+    """Look for 'reverse' or 'halve' scenario in risk section."""
+    if not text:
+        return ""
+    text = _strip_emoji(text)
+    # Look for the specific trigger pattern
+    m = re.search(r'주가를\s*반토막[^\n]*\n+([^\n]+(?:\n[^\n#|]+){0,4})', text)
+    if m:
+        body = m.group(1)
+    else:
+        # Fallback: first paragraph of risk section
+        return _sv2_first_para(text, max_len)
+    body = re.sub(r'\*\*(.+?)\*\*', r'\1', body)
+    body = re.sub(r'`(.+?)`', r'\1', body)
+    body = re.sub(r'^-\s*', '', body, flags=re.MULTILINE)
+    body = re.sub(r'\n+', ' ', body)
+    body = re.sub(r'\s+', ' ', body).strip()
+    if len(body) > max_len:
+        body = body[:max_len].rsplit(' ', 1)[0] + '…'
+    return html_lib.escape(body)
+
+
+def _sv2_star_row(value_pct):
+    """Return 5 stars HTML based on percent value."""
+    if value_pct >= 40:
+        filled = 5
+    elif value_pct >= 20:
+        filled = 4
+    elif value_pct >= 0:
+        filled = 3
+    elif value_pct >= -20:
+        filled = 2
+    elif value_pct >= -40:
+        filled = 1
+    else:
+        filled = 0
+    stars = '★' * filled
+    dim = '<span class="dim">' + ('★' * (5 - filled)) + '</span>' if filled < 5 else ''
+    return stars + dim
+
+
+def _generate_summary_v2(data, output_dir):
+    """v2: 8-page institutional PDF with Navy/Gold palette."""
+    meta = data["meta"]
+    price = data["price"]
+    opinion = data["opinion"]
+    fin = data["financials"]
+    segs = data["segments"]
+    peers = data.get("peers", [])
+    catalysts = data.get("catalysts", [])
+    supply = data.get("supply", {})
+    sections = data["sections"]
+
+    name = meta["stock_name"].replace(" ", "")
+    is_kr = meta["country"] == "KR"
+    c = meta.get("currency", "원") if is_kr else "$"
+
+    def fmt_money(v):
+        if v is None:
+            return "N/A"
+        if is_kr:
+            return f'{int(v):,}원'
+        return f'${float(v):,.2f}'
+
+    def safe(v, default="—"):
+        return default if v is None else v
+
+    # ---- Price ratios ----
+    cur_price = price.get("current") or 1
+    up_base = ((opinion["target_base"] - cur_price) / cur_price) * 100
+    up_bull = ((opinion["target_bull"] - cur_price) / cur_price) * 100
+    down_bear = ((opinion["target_bear"] - cur_price) / cur_price) * 100
+
+    rating = opinion.get("rating", "HOLD")
+    rating_type = opinion.get("type", "")
+    rr = opinion.get("risk_reward", "—")
+
+    # ---- Extract content ----
+    thesis_points = _sv2_extract_points(sections.get("s02_investment_points", ""), 3)
+    # Fallback: use generic bullets if extraction fails
+    if len(thesis_points) < 3:
+        thesis_points = [
+            {"num": "1", "title": "투자포인트 #1", "body": _sv2_first_para(sections.get("s02_investment_points", ""), 240)},
+            {"num": "2", "title": "투자포인트 #2", "body": _sv2_first_para(sections.get("s13_thesis", ""), 240)},
+            {"num": "3", "title": "투자포인트 #3", "body": _sv2_first_para(sections.get("s14_short_thesis", ""), 240)},
+        ]
+
+    core_thesis = _sv2_first_para(sections.get("s13_thesis", "") or sections.get("s01_opinion", ""), 300)
+    industry_overview = _sv2_first_para(sections.get("s04_industry", ""), 320)
+    business_overview = _sv2_first_para(sections.get("s03_company_overview", ""), 300)
+    financial_summary = _sv2_first_para(sections.get("s08_financial", ""), 300)
+    valuation_summary = _sv2_first_para(sections.get("s09_valuation", ""), 280)
+    macro_summary = _sv2_first_para(sections.get("s10_macro", ""), 260)
+    kill_switch = _sv2_extract_kill_switch(sections.get("s10_macro", ""), 280)
+    action_summary = _sv2_first_para(sections.get("s20_action_plan", ""), 280)
+    final_conclusion = _sv2_first_para(sections.get("s13_thesis", "") or sections.get("s01_opinion", ""), 320)
+
+    # ---- Tagline (cover subtitle, Georgia italic) ----
+    # Priority: meta.subtitle (manual) > derived from industry + rating
+    tagline = meta.get("subtitle")
+    if not tagline:
+        industry = meta.get('industry', '')
+        if rating == "BUY":
+            tagline = f"{industry}의 비대칭 기회"
+        elif rating == "SELL":
+            tagline = f"{industry}에서 가격이 내러티브를 앞서가다"
+        else:
+            tagline = f"{industry} · Balance of risk tilts to the downside"
+    tagline = _strip_emoji(tagline)
+
+    # ---- Financials table subset (top 6 rows) ----
+    fin_headers = fin.get("headers", [])
+    fin_rows = fin.get("rows", [])[:6]
+
+    def render_fin_table():
+        if not fin_headers or not fin_rows:
+            return "<p>재무 데이터 없음</p>"
+        th = ''.join(
+            f'<th class="{"num" if i > 0 else ""}">{html_lib.escape(str(h))}</th>'
+            for i, h in enumerate(fin_headers)
+        )
+        rows_html = ''
+        for row in fin_rows:
+            cells = ''
+            for i, v in enumerate(row):
+                cls = "num" if i > 0 else "name"
+                cells += f'<td class="{cls}">{html_lib.escape(str(v))}</td>'
+            rows_html += f'<tr>{cells}</tr>'
+        return f'<table class="nyt"><thead><tr>{th}</tr></thead><tbody>{rows_html}</tbody></table>'
+
+    def render_peer_table():
+        if not peers:
+            return ""
+        rows_html = ''
+        for p in peers[:6]:
+            highlight_cls = ' class="bull-row"' if p.get("highlight") else ''
+            rows_html += (
+                f'<tr{highlight_cls}>'
+                f'<td class="name">{html_lib.escape(_strip_emoji(str(p.get("name",""))))}</td>'
+                f'<td class="num">{html_lib.escape(_strip_emoji(str(p.get("market_cap",""))))}</td>'
+                f'<td class="num">{html_lib.escape(_strip_emoji(str(p.get("per",""))))}</td>'
+                f'<td class="num">{html_lib.escape(_strip_emoji(str(p.get("pbr",""))))}</td>'
+                f'</tr>'
+            )
+        return (
+            '<table class="nyt"><thead><tr>'
+            '<th>Peer</th><th class="num">시가총액</th><th class="num">PER</th><th class="num">PBR</th>'
+            '</tr></thead><tbody>' + rows_html + '</tbody></table>'
+        )
+
+    def render_segment_list():
+        if not segs:
+            return ""
+        items = ''
+        for s in segs[:6]:
+            items += (
+                f'<div class="seg-item">'
+                f'<div class="seg-name">{html_lib.escape(_strip_emoji(str(s.get("name",""))))}</div>'
+                f'<div class="seg-pct">{html_lib.escape(str(s.get("pct","")))}%</div>'
+                f'<div class="seg-outlook">{html_lib.escape(_strip_emoji(str(s.get("outlook",""))))}</div>'
+                f'</div>'
+            )
+        return f'<div class="seg-list">{items}</div>'
+
+    def render_catalyst_table():
+        if not catalysts:
+            return ""
+        rows_html = ''
+        for ct in catalysts[:5]:
+            rows_html += (
+                f'<tr>'
+                f'<td class="name">{html_lib.escape(_strip_emoji(str(ct.get("date",""))))}</td>'
+                f'<td>{html_lib.escape(_strip_emoji(str(ct.get("event",""))))}</td>'
+                f'<td class="num">{html_lib.escape(_strip_emoji(str(ct.get("impact",""))))}</td>'
+                f'</tr>'
+            )
+        return (
+            '<table class="nyt"><thead><tr>'
+            '<th>시기</th><th>이벤트</th><th class="num">영향</th>'
+            '</tr></thead><tbody>' + rows_html + '</tbody></table>'
+        )
+
+    # ==========================================================================
+    # PAGE 1 — COVER
+    # ==========================================================================
+    cover_rating_color = {"BUY": "#2a6b4a", "HOLD": "#b8922e", "SELL": "#8b2e2e"}.get(rating, "#b8922e")
+
+    page1 = f"""
+<section class="page cover">
+  <div class="brand-bar">
+    <div class="left">Equity Research · Institutional Grade</div>
+    <div class="right">{html_lib.escape(meta.get("date",""))}</div>
+  </div>
+  <div class="cover-body">
+    <div class="cap-gold">— Equity Research Note —</div>
+    <h1 class="stock-title">{html_lib.escape(meta.get("stock_name",""))}</h1>
+    <div class="stock-meta">{html_lib.escape(meta.get("stock_code",""))} &nbsp;·&nbsp; {html_lib.escape(meta.get("industry",""))}</div>
+    <div class="tagline">{html_lib.escape(tagline)}</div>
+  </div>
+  <div class="pick-box">
+    <div class="pick-label">Our Call</div>
+    <div class="pick-row">
+      <div>
+        <span class="pick-badge" style="background:#b8922e;">{html_lib.escape(rating)}</span>
+      </div>
+      <div class="pick-metrics">
+        <div>Target (Base) &nbsp; <span class="big">{fmt_money(opinion["target_base"])}</span></div>
+        <div>Current &nbsp; {fmt_money(cur_price)} &nbsp;·&nbsp; Upside {up_base:+.1f}%</div>
+        <div>Risk · Reward &nbsp; {html_lib.escape(str(rr))}</div>
+      </div>
+    </div>
+  </div>
+  <div class="cover-footer">
+    <span>Framework · 5-Layer Analysis · Q1–Q10 Quant Protocol</span>
+    <span>v4 Single-Agent Research</span>
+  </div>
+</section>
+"""
+
+    # ==========================================================================
+    # PAGE 2 — EXECUTIVE SUMMARY (Verdict Card + Core Thesis + KPI)
+    # ==========================================================================
+    # KPI 추출 — row label로 매칭 (인덱스 의존 제거)
+    def find_row(keyword):
+        for row in fin.get("rows", []):
+            if row and keyword in str(row[0]):
+                return row
+        return None
+
+    row_rev = find_row("매출")
+    row_op = find_row("영업이익")
+    row_opm = find_row("OPM")
+    if not row_opm:
+        row_opm = find_row("영업이익률")
+
+    # headers e.g. ["항목","2021","2022","2023","2024","2025","2026E"]
+    # 가장 최근 '확정' 값 = 마지막에서 Forward(E) 제외
+    headers = fin.get("headers", [])
+    # Forward 컬럼 인덱스 탐색 (E 포함)
+    last_actual_idx = len(headers) - 1
+    for i in range(len(headers) - 1, 0, -1):
+        h = str(headers[i])
+        if 'E' not in h.upper() and 'F' not in h.upper():
+            last_actual_idx = i
+            break
+
+    def val_at(row, idx):
+        if not row or idx >= len(row):
+            return "—"
+        return str(row[idx])
+
+    kpi_revenue = val_at(row_rev, last_actual_idx)
+    kpi_op = val_at(row_op, last_actual_idx)
+    kpi_opm = val_at(row_opm, last_actual_idx)
+    latest_year = headers[last_actual_idx] if last_actual_idx < len(headers) else ""
+
+    down_cls = "neg" if down_bear < 0 else "pos"
+    up_cls = "pos" if up_base > 0 else "neg"
+    bull_cls = "pos" if up_bull > 0 else "neg"
+
+    # 52주 고저 표시
+    hi_52 = price.get("high_52w")
+    lo_52 = price.get("low_52w")
+    if hi_52 and lo_52 and is_kr:
+        range_str = f"{int(lo_52):,} – {int(hi_52):,}"
+    elif hi_52 and lo_52:
+        range_str = f"${lo_52:,.2f} – ${hi_52:,.2f}"
+    else:
+        range_str = "—"
+
+    # R/R 텍스트 짧게
+    rr_short = str(rr)
+    if len(rr_short) > 18:
+        rr_short = rr_short.split('(')[0].strip() or rr_short[:18]
+
+    page2 = f"""
+<section class="page">
+  <div class="running-header">
+    <div class="brand">{html_lib.escape(meta.get("stock_name",""))} · Equity Research</div>
+    <div class="page-num">01 / 07 &nbsp;·&nbsp; 02</div>
+  </div>
+
+  <div class="section-caption">01 · Executive Summary</div>
+  <h2 class="section-heading">투자의견 요약</h2>
+  <div class="section-intro">본 요약은 8페이지 구성의 기관용 리서치 노트이며, 상세 분석은 동일 폴더의 상세 PDF를 참조한다.</div>
+
+  <div class="verdict-card">
+    <div class="verdict-head">
+      <div class="title">Investment Verdict</div>
+      <div class="verdict-rating-badge" style="background:{cover_rating_color}; color:#ffffff;">{html_lib.escape(rating)}</div>
+    </div>
+    <div class="verdict-grid">
+      <div class="verdict-cell">
+        <div class="lbl">Current Price</div>
+        <div class="val">{fmt_money(cur_price)}</div>
+        <div class="delta">52W {html_lib.escape(range_str)}</div>
+      </div>
+      <div class="verdict-cell">
+        <div class="lbl">Target · Base</div>
+        <div class="val">{fmt_money(opinion["target_base"])}</div>
+        <div class="delta {up_cls}">{up_base:+.1f}%</div>
+      </div>
+      <div class="verdict-cell last-col">
+        <div class="lbl">Target · Bull</div>
+        <div class="val">{fmt_money(opinion["target_bull"])}</div>
+        <div class="delta {bull_cls}">{up_bull:+.1f}%</div>
+      </div>
+      <div class="verdict-cell last-row">
+        <div class="lbl">Target · Bear</div>
+        <div class="val">{fmt_money(opinion["target_bear"])}</div>
+        <div class="delta {down_cls}">{down_bear:+.1f}%</div>
+      </div>
+      <div class="verdict-cell last-row">
+        <div class="lbl">Market Cap</div>
+        <div class="val">{html_lib.escape(str(price.get("market_cap","—")))}</div>
+        <div class="delta">PER {safe(price.get("per"))} · PBR {safe(price.get("pbr"))}</div>
+      </div>
+      <div class="verdict-cell last-col last-row">
+        <div class="lbl">Risk · Reward</div>
+        <div class="val">{html_lib.escape(rr_short)}</div>
+        <div class="delta">Div Yield {safe(price.get("dividend_yield"),"—")}%</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="core-thesis">{core_thesis}</div>
+
+  <div class="sub-heading">Key Financials &nbsp;·&nbsp; {html_lib.escape(latest_year)}</div>
+  <div class="kpi-row">
+    <div class="kpi-block">
+      <div class="lbl">{html_lib.escape((row_rev[0] if row_rev else 'Revenue'))}</div>
+      <div class="val">{html_lib.escape(str(kpi_revenue))}</div>
+      <div class="note">Consolidated</div>
+    </div>
+    <div class="kpi-block">
+      <div class="lbl">{html_lib.escape((row_op[0] if row_op else 'Operating Income'))}</div>
+      <div class="val">{html_lib.escape(str(kpi_op))}</div>
+      <div class="note">Operating basis</div>
+    </div>
+    <div class="kpi-block">
+      <div class="lbl">{html_lib.escape((row_opm[0] if row_opm else 'OPM'))}</div>
+      <div class="val">{html_lib.escape(str(kpi_opm))}</div>
+      <div class="note">Operating Margin</div>
+    </div>
+  </div>
+
+  <div class="page-footer">
+    <span>{html_lib.escape(meta.get("stock_name",""))} · Executive Summary</span>
+    <span>Page 02 / 08</span>
+  </div>
+</section>
+"""
+
+    # ==========================================================================
+    # PAGE 3 — INVESTMENT THESIS (3 points)
+    # ==========================================================================
+    thesis_html = ''
+    for pt in thesis_points[:3]:
+        thesis_html += f"""
+    <div class="thesis-point">
+      <div class="num">{pt['num']}</div>
+      <div class="title">{pt['title']}</div>
+      <div class="body">{pt['body']}</div>
+    </div>
+"""
+
+    page3 = f"""
+<section class="page">
+  <div class="running-header">
+    <div class="brand">{html_lib.escape(meta.get("stock_name",""))} · Equity Research</div>
+    <div class="page-num">02 / 07 &nbsp;·&nbsp; 03</div>
+  </div>
+
+  <div class="section-caption">02 · Investment Thesis</div>
+  <h2 class="section-heading">Three Reasons</h2>
+  <div class="section-intro">본 리포트의 핵심 주장을 구성하는 3개 포인트. 각 포인트는 정량 근거와 비대칭 R/R 논리를 포함한다.</div>
+
+  <div class="thesis-points">
+    {thesis_html}
+  </div>
+
+  <div class="page-footer">
+    <span>{html_lib.escape(meta.get("stock_name",""))} · Investment Thesis</span>
+    <span>Page 03 / 08</span>
+  </div>
+</section>
+"""
+
+    # ==========================================================================
+    # PAGE 4 — BUSINESS & INDUSTRY
+    # ==========================================================================
+    page4 = f"""
+<section class="page">
+  <div class="running-header">
+    <div class="brand">{html_lib.escape(meta.get("stock_name",""))} · Equity Research</div>
+    <div class="page-num">03 / 07 &nbsp;·&nbsp; 04</div>
+  </div>
+
+  <div class="section-caption">03 · Business &amp; Industry</div>
+  <h2 class="section-heading">사업 구조 &amp; 산업 포지셔닝</h2>
+
+  <div class="sub-heading">Company Snapshot</div>
+  <p>{business_overview}</p>
+
+  <div class="sub-heading">Revenue Mix</div>
+  {render_segment_list()}
+
+  <div class="sub-heading">Industry Context</div>
+  <p>{industry_overview}</p>
+
+  <div class="page-footer">
+    <span>{html_lib.escape(meta.get("stock_name",""))} · Business &amp; Industry</span>
+    <span>Page 04 / 08</span>
+  </div>
+</section>
+"""
+
+    # ==========================================================================
+    # PAGE 5 — FINANCIAL SNAPSHOT
+    # ==========================================================================
+    page5 = f"""
+<section class="page">
+  <div class="running-header">
+    <div class="brand">{html_lib.escape(meta.get("stock_name",""))} · Equity Research</div>
+    <div class="page-num">04 / 07 &nbsp;·&nbsp; 05</div>
+  </div>
+
+  <div class="section-caption">04 · Financial Snapshot</div>
+  <h2 class="section-heading">5-Year Financials</h2>
+
+  {render_fin_table()}
+  <p style="font-size:7.5pt; color:#9ca6b5; margin-top:-2mm;">Source: {html_lib.escape(fin.get("source",""))}</p>
+
+  <div class="sub-heading">Financial Highlights</div>
+  <p>{financial_summary}</p>
+
+  <div class="page-footer">
+    <span>{html_lib.escape(meta.get("stock_name",""))} · Financial Snapshot</span>
+    <span>Page 05 / 08</span>
+  </div>
+</section>
+"""
+
+    # ==========================================================================
+    # PAGE 6 — VALUATION & SCENARIOS
+    # ==========================================================================
+    bear_star = _sv2_star_row(down_bear)
+    base_star = _sv2_star_row(up_base)
+    bull_star = _sv2_star_row(up_bull)
+
+    scenario_table = f"""
+<table class="nyt">
+  <thead><tr>
+    <th>Scenario</th>
+    <th class="num">Target</th>
+    <th class="num">vs Current</th>
+    <th class="num">Probability</th>
+  </tr></thead>
+  <tbody>
+    <tr class="bear-row">
+      <td class="name">Bear</td>
+      <td class="num">{fmt_money(opinion["target_bear"])}</td>
+      <td class="num">{down_bear:+.1f}%</td>
+      <td class="num">30%</td>
+    </tr>
+    <tr>
+      <td class="name">Base</td>
+      <td class="num">{fmt_money(opinion["target_base"])}</td>
+      <td class="num">{up_base:+.1f}%</td>
+      <td class="num">50%</td>
+    </tr>
+    <tr class="bull-row">
+      <td class="name">Bull</td>
+      <td class="num">{fmt_money(opinion["target_bull"])}</td>
+      <td class="num">{up_bull:+.1f}%</td>
+      <td class="num">20%</td>
+    </tr>
+  </tbody>
+</table>
+"""
+
+    page6 = f"""
+<section class="page">
+  <div class="running-header">
+    <div class="brand">{html_lib.escape(meta.get("stock_name",""))} · Equity Research</div>
+    <div class="page-num">05 / 07 &nbsp;·&nbsp; 06</div>
+  </div>
+
+  <div class="section-caption">05 · Valuation</div>
+  <h2 class="section-heading">가치 평가 &amp; 시나리오</h2>
+
+  <div class="sub-heading">Scenario Analysis</div>
+  {scenario_table}
+
+  <div class="sub-heading">Risk · Reward</div>
+  <div class="rr-stars">
+    <div class="row">
+      <div class="cell label-cell">Bear</div>
+      <div class="cell stars-cell">{bear_star}</div>
+      <div class="cell value-cell">{down_bear:+.1f}% / 30%</div>
+    </div>
+    <div class="row">
+      <div class="cell label-cell">Base</div>
+      <div class="cell stars-cell">{base_star}</div>
+      <div class="cell value-cell">{up_base:+.1f}% / 50%</div>
+    </div>
+    <div class="row">
+      <div class="cell label-cell">Bull</div>
+      <div class="cell stars-cell">{bull_star}</div>
+      <div class="cell value-cell">{up_bull:+.1f}% / 20%</div>
+    </div>
+  </div>
+
+  <div class="sub-heading">Valuation Commentary</div>
+  <p>{valuation_summary}</p>
+
+  <div class="sub-heading">Peer Group</div>
+  {render_peer_table()}
+
+  <div class="page-footer">
+    <span>{html_lib.escape(meta.get("stock_name",""))} · Valuation</span>
+    <span>Page 06 / 08</span>
+  </div>
+</section>
+"""
+
+    # ==========================================================================
+    # PAGE 7 — RISK
+    # ==========================================================================
+    page7 = f"""
+<section class="page">
+  <div class="running-header">
+    <div class="brand">{html_lib.escape(meta.get("stock_name",""))} · Equity Research</div>
+    <div class="page-num">06 / 07 &nbsp;·&nbsp; 07</div>
+  </div>
+
+  <div class="section-caption">06 · Risk Assessment</div>
+  <h2 class="section-heading">리스크 &amp; Kill Switch</h2>
+
+  <div class="sub-heading">Macro Risk Overview</div>
+  <p>{macro_summary}</p>
+
+  <div class="sub-heading">Upcoming Catalysts</div>
+  {render_catalyst_table()}
+
+  <div class="kill-switch">
+    <div class="label">⚠ Kill Switch · Stop-Loss Triggers</div>
+    <div class="body">{kill_switch}</div>
+  </div>
+
+  <div class="page-footer">
+    <span>{html_lib.escape(meta.get("stock_name",""))} · Risk Assessment</span>
+    <span>Page 07 / 08</span>
+  </div>
+</section>
+"""
+
+    # ==========================================================================
+    # PAGE 8 — FINAL CALL + ACTION PLAN
+    # ==========================================================================
+    page8 = f"""
+<section class="page">
+  <div class="running-header">
+    <div class="brand">{html_lib.escape(meta.get("stock_name",""))} · Equity Research</div>
+    <div class="page-num">07 / 07 &nbsp;·&nbsp; 08</div>
+  </div>
+
+  <div class="section-caption">07 · Execution</div>
+  <h2 class="section-heading">Action Plan &amp; Final Call</h2>
+
+  <div class="sub-heading">Implementation Guide</div>
+  <p>{action_summary}</p>
+
+  <div class="final-call">
+    <div class="caption">— Final Call —</div>
+    <div class="conclusion">{final_conclusion}</div>
+    <div class="signature">
+      <span>Equity Research · Single-Agent v4</span>
+      <span>{html_lib.escape(meta.get("date",""))}</span>
+    </div>
+  </div>
+
+  <div class="page-footer">
+    <span>{html_lib.escape(meta.get("stock_name",""))} · Final Call</span>
+    <span>Page 08 / 08 · End of Report</span>
+  </div>
+</section>
+"""
+
+    # ==========================================================================
+    # ASSEMBLE HTML
+    # ==========================================================================
+    html = f"""<!DOCTYPE html>
+<html lang="ko"><head><meta charset="UTF-8">
+<title>{html_lib.escape(meta.get("stock_name",""))} — Equity Research</title>
+<style>{_SUMMARY_V2_CSS}</style>
+</head><body>
+{page1}
+{page2}
+{page3}
+{page4}
+{page5}
+{page6}
+{page7}
+{page8}
+</body></html>
+"""
+
+    html_path = os.path.join(output_dir, f'report_{name}_요약.html')
+    with open(html_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+
+    # PDF variant
+    try:
+        from playwright.sync_api import sync_playwright
+        pdf_path = os.path.join(output_dir, f'report_{name}_요약.pdf')
+        file_url = "file:///" + os.path.abspath(html_path).replace("\\", "/")
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(file_url)
+            page.pdf(
+                path=pdf_path,
+                format="A4",
+                margin={"top": "0mm", "bottom": "0mm", "left": "0mm", "right": "0mm"},
+                print_background=True,
+                prefer_css_page_size=True,
+            )
+            browser.close()
+        os.remove(html_path)
+        print(f'[OK] 요약 PDF (v2): {pdf_path} ({os.path.getsize(pdf_path)//1024} KB)')
+    except Exception as e:
+        print(f'[!!] PDF 변환 실패: {e}, HTML 파일은 생성됨 ({html_path})')
+
+
+# ==========================================================================
+# 2C. LEGACY SUMMARY (kept for reference)
+# ==========================================================================
+def _generate_summary_legacy(data, output_dir):
+    """Deprecated: simple blue-themed summary. Kept for reference."""
+    meta = data["meta"]
+    price = data["price"]
+    opinion = data["opinion"]
+    fin = data["financials"]
+    segs = data["segments"]
+    peers = data.get("peers", [])
+    catalysts = data.get("catalysts", [])
+    supply = data.get("supply", {})
+    quarterly = data.get("quarterly", {})
+    sections = data["sections"]
+
+    name = meta["stock_name"].replace(" ", "")
+    is_kr = meta["country"] == "KR"
+    c = meta["currency"] if is_kr else "$"
+
+    def fmt(val):
+        return f'{val:,}{c}' if is_kr else f'${val:,}'
+
+    current = price["current"] or 1  # 0원 나누기 방지
+    upside_base = ((opinion["target_base"] - current) / current) * 100
+    upside_bull = ((opinion["target_bull"] - current) / current) * 100
+    downside_bear = ((opinion["target_bear"] - current) / current) * 100
+
+    # 시나리오 테이블 행
+    scenario_rows = f'''
+    <tr class="bear"><td><strong>Bear Case</strong></td><td>{fmt(opinion["target_bear"])}</td><td>{downside_bear:+.1f}%</td></tr>
+    <tr><td><strong>Base Case</strong></td><td>{fmt(opinion["target_base"])}</td><td>{upside_base:+.1f}%</td></tr>
+    <tr class="bull"><td><strong>Bull Case</strong></td><td>{fmt(opinion["target_bull"])}</td><td>{upside_bull:+.1f}%</td></tr>'''
+
+    # 재무 테이블
+    fin_header = ''.join(f'<th>{h}</th>' for h in fin["headers"])
+    fin_rows = ''
+    for row in fin["rows"]:
+        cells = ''.join(f'<td>{v}</td>' for v in row)
+        fin_rows += f'<tr>{cells}</tr>'
+
+    # 사업부 테이블
+    seg_rows = ''
+    for s in segs:
+        seg_rows += f'<tr><td><strong>{s["name"]}</strong></td><td>{s["pct"]}%</td><td>{s["outlook"]}</td></tr>'
+
+    # Peer 테이블
+    peer_rows = ''
+    for p in peers:
+        hl = ' style="background:#fff3e0;"' if p.get("highlight") else ''
+        peer_rows += f'<tr{hl}><td><strong>{p["name"]}</strong></td><td>{p["market_cap"]}</td><td>{p["per"]}</td><td>{p["pbr"]}</td><td>{p["note"]}</td></tr>'
+
+    # 카탈리스트
+    cat_rows = ''
+    for ct in catalysts:
+        cat_rows += f'<tr><td>{ct["date"]}</td><td>{ct["event"]}</td><td>{ct["impact"]}</td></tr>'
+
+    # 분기 실적
+    q_html = ''
+    if quarterly:
+        q_header = ''.join(f'<th>{h}</th>' for h in quarterly["headers"])
+        q_rows_html = ''
+        for row in quarterly["rows"]:
+            cells = ''.join(f'<td>{v}</td>' for v in row)
+            q_rows_html += f'<tr>{cells}</tr>'
+        q_html = f'''
+        <h3>분기별 실적 ({quarterly["year"]})</h3>
+        <table><tr>{q_header}</tr>{q_rows_html}</table>
+        <p style="font-size:8pt; color:#999;">{quarterly.get("note","")}</p>'''
+
+    # 수급
+    supply_html = ''
+    if supply:
+        supply_html = f'''
+        <h3>수급 분석 (최근 {supply.get("days",20)}일)</h3>
+        <table>
+        <tr><th>투자자</th><th>순매수</th></tr>
+        <tr><td>외국인</td><td style="color:{"green" if supply["foreign"]>0 else "red"}">{supply["foreign"]:+,}주</td></tr>
+        <tr><td>기관</td><td style="color:{"green" if supply["institution"]>0 else "red"}">{supply["institution"]:+,}주</td></tr>
+        <tr><td>개인</td><td style="color:{"green" if supply["individual"]>0 else "red"}">{supply["individual"]:+,}주</td></tr>
+        </table>
+        <p style="font-size:9pt;">{supply.get("comment","")}</p>'''
+
+    def summarize(key, max_len=400):
+        txt = sections.get(key, "")
+        # 마크다운 테이블 끊김 방지: 테이블이 있으면 자르지 않고 전체 렌더
+        if re.search(r'\n\s*\|[\s\-:|]+\|', txt):
+            return md_table_to_html(txt)
+        if len(txt) > max_len:
+            txt = txt[:max_len] + "..."
+        return html_lib.escape(txt).replace('\n', '<br>')
+
+    rating_class = {"BUY": "tag-buy", "HOLD": "tag-hold", "SELL": "tag-sell"}.get(opinion["rating"], "tag-hold")
+
+    html = f'''<!DOCTYPE html>
+<html lang="ko"><head><meta charset="UTF-8">
+<style>
+  @page {{ size: A4; margin: 2cm 2.5cm; }}
+  body {{ font-family: 'Malgun Gothic', sans-serif; font-size: 10pt; line-height: 1.6; color: #1a1a1a; }}
+  h1 {{ font-size: 20pt; color: #0d47a1; border-bottom: 3px solid #0d47a1; padding-bottom: 6px; margin-top: 25px; }}
+  h3 {{ font-size: 12pt; color: #1976d2; margin-top: 15px; }}
+  table {{ width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 9pt; }}
+  th {{ background: #1565c0; color: white; padding: 5px 7px; text-align: center; }}
+  td {{ border: 1px solid #ddd; padding: 4px 7px; }}
+  tr:nth-child(even) {{ background: #f5f5f5; }}
+  .highlight {{ background: #fff3e0; padding: 10px; border-left: 4px solid #ff9800; margin: 8px 0; font-size: 9pt; }}
+  .bear {{ background: #ffebee; }}
+  .bull {{ background: #e8f5e9; }}
+  .verdict {{ background: #e3f2fd; padding: 12px; border: 2px solid #1565c0; margin: 12px 0; text-align: center; }}
+  .tag {{ display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 9pt; font-weight: bold; }}
+  .tag-buy {{ background: #4caf50; color: white; }}
+  .tag-hold {{ background: #ff9800; color: white; }}
+  .tag-sell {{ background: #f44336; color: white; }}
+  .cover {{ text-align: center; padding: 60px 0; page-break-after: always; }}
+  .cover h1 {{ font-size: 30pt; border: none; }}
+  .pagebreak {{ page-break-before: always; }}
+  .section-text {{ font-size: 9pt; line-height: 1.5; }}
+</style></head><body>
+
+<div class="cover">
+  <h1>{meta["stock_name"]} ({meta["stock_code"]})</h1>
+  <div style="font-size:14pt; color:#1565c0;">Investment Research Report -요약본</div>
+  <div style="font-size:12pt; color:#666; margin-top:10px;">{meta["industry"]}</div>
+  <div style="margin-top:40px;">
+    <span class="tag {rating_class}">{opinion["rating"]}</span>
+  </div>
+  <div style="margin-top:15px; font-size:13pt;">
+    목표주가: <strong>{fmt(opinion["target_base"])}</strong> | 현재가: <strong>{fmt(price["current"])}</strong>
+  </div>
+  <div style="font-size:10pt; color:#999; margin-top:30px;">{meta["date"]} 기준</div>
+</div>
+
+<h1>핵심 실적 추정</h1>
+<table><tr>{fin_header}</tr>{fin_rows}</table>
+<p style="font-size:8pt; color:#999;">출처: {fin["source"]}</p>
+
+<h3>사업부별 매출 비중</h3>
+<table><tr><th>사업부</th><th>비중</th><th>전망</th></tr>{seg_rows}</table>
+
+<h1>1. 투자의견</h1>
+<div class="verdict">
+  <div style="font-size:14pt; font-weight:bold;">투자의견: {opinion["rating"]}</div>
+  <div>현재가 {fmt(price["current"])} | 목표주가 {fmt(opinion["target_base"])} | 상승여력 {upside_base:+.1f}%</div>
+</div>
+<table>
+  <tr><th>시나리오</th><th>적정주가</th><th>현재가 대비</th></tr>
+  {scenario_rows}
+</table>
+<p>Risk-Reward: {opinion["risk_reward"]}</p>
+
+<h1>2. 투자포인트</h1>
+<div class="section-text">{summarize("s02_investment_points", 600)}</div>
+
+<h1 class="pagebreak">3. 회사 개요</h1>
+<table>
+  <tr><td>회사명</td><td>{meta["stock_name"]}</td><td>종목코드</td><td>{meta["stock_code"]}</td></tr>
+  <tr><td>시가총액</td><td>{price["market_cap"]}</td><td>현재가</td><td>{fmt(price["current"])}</td></tr>
+  <tr><td>PER</td><td>{price["per"]}배</td><td>PBR</td><td>{price["pbr"]}배</td></tr>
+  <tr><td>52주 최고/최저</td><td>{price["high_52w"]:,} / {price["low_52w"]:,}</td><td>배당수익률</td><td>{price.get("dividend_yield","N/A")}</td></tr>
+</table>
+
+<h1>5. 경쟁 구도</h1>
+<table><tr><th>기업</th><th>시가총액</th><th>PER</th><th>PBR</th><th>비고</th></tr>{peer_rows}</table>
+
+<h1>8. 재무 분석</h1>
+<table><tr>{fin_header}</tr>{fin_rows}</table>
+<p style="font-size:8pt; color:#999;">출처: {fin["source"]}</p>
+{q_html}
+
+<h1>4. 산업 & 시장</h1>
+<div class="section-text">{summarize("s04_industry", 500)}</div>
+
+<h1 class="pagebreak">6. 경제적 해자</h1>
+<div class="section-text">{summarize("s06_moat", 400)}</div>
+
+<h1>7. 경영진</h1>
+<div class="section-text">{summarize("s07_management", 400)}</div>
+
+<h1>9. 밸류에이션</h1>
+<div class="section-text">{summarize("s09_valuation", 500)}</div>
+
+<h1>10. 매크로 리스크</h1>
+<div class="section-text">{summarize("s10_macro", 400)}</div>
+
+<h1 class="pagebreak">11. 카탈리스트 타임라인</h1>
+<table><tr><th>시기</th><th>이벤트</th><th>영향</th></tr>{cat_rows}</table>
+
+<h1>12. 시나리오</h1>
+<div class="section-text">{summarize("s12_scenarios", 600)}</div>
+
+<h1>13. 투자 논문</h1>
+<div class="highlight">{summarize("s13_thesis", 500)}</div>
+
+<h1>14. 숏 논거 + 반박</h1>
+<div class="section-text">{summarize("s14_short_thesis", 600)}</div>
+
+<h1 class="pagebreak">15. 실적 Beat/Miss</h1>
+<div class="section-text">{summarize("s15_beat_miss", 400)}</div>
+
+<h1>16. 애널리스트 컨센서스</h1>
+<div class="section-text">{summarize("s16_consensus", 300)}</div>
+
+{supply_html}
+
+<h1>18. 주주환원</h1>
+<div class="section-text">{summarize("s18_shareholder_return", 300)}</div>
+
+<h1 class="pagebreak">19. Trust / Worry / Watch</h1>
+<div class="section-text">{summarize("s19_trust_worry_watch", 600)}</div>
+
+<h1>20. 실행 계획</h1>
+<div class="section-text">{summarize("s20_action_plan", 400)}</div>
+
+<h1>21. 분석 신뢰도</h1>
+<div class="section-text" style="font-size:8pt;">{summarize("s21_reliability", 500)}</div>
+
+</body></html>'''
+
+    html_path = os.path.join(output_dir, f'report_{name}_요약.html')
+    with open(html_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+
+    # PDF 변환
+    try:
+        from playwright.sync_api import sync_playwright
+        pdf_path = os.path.join(output_dir, f'report_{name}_요약.pdf')
+        file_url = "file:///" + os.path.abspath(html_path).replace("\\", "/")
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(file_url)
+            page.pdf(path=pdf_path, format="A4",
+                     margin={"top":"20mm","bottom":"20mm","left":"25mm","right":"25mm"},
+                     print_background=True)
+            browser.close()
+        os.remove(html_path)  # HTML 삭제 (PDF만 남김)
+        print(f'[OK] 요약 PDF: {pdf_path} ({os.path.getsize(pdf_path)//1024} KB)')
+    except Exception as e:
+        print(f'[!!] PDF 변환 실패: {e}, HTML 파일만 생성됨')
+
+
+# ==========================================================================
+# 2D. INSTITUTIONAL DETAILED REPORT (v3 — single HTML→PDF, 21 sections, Navy/Gold)
+# ==========================================================================
+
+def _md_to_html_blocks(md_text):
+    """Convert markdown section body to clean HTML blocks.
+
+    Handles: ## ### #### headings, **bold**, *italic*, `code`,
+             | tables |, --- hr, > blockquote, - bullet, 1. ordered list.
+    Strips emojis and decorative pictographs.
+    """
+    if not md_text:
+        return ""
+
+    md_text = _strip_emoji(md_text)
+    lines = md_text.split('\n')
+    html_parts = []
+    i = 0
+    n = len(lines)
+
+    def render_inline(text):
+        """Inline emphasis: **bold**, *italic*, `code`."""
+        # Escape HTML first
+        text = html_lib.escape(text)
+        # Bold (must come before italic to avoid * conflict)
+        text = re.sub(r'\*\*([^*\n]+?)\*\*', r'<strong>\1</strong>', text)
+        # Italic
+        text = re.sub(r'(?<!\*)\*([^*\n]+?)\*(?!\*)', r'<em>\1</em>', text)
+        # Inline code
+        text = re.sub(r'`([^`\n]+?)`', r'<code>\1</code>', text)
+        return text
+
+    while i < n:
+        line = lines[i].rstrip()
+        stripped = line.strip()
+
+        # Empty line: paragraph break (handled by accumulator)
+        if not stripped:
+            i += 1
+            continue
+
+        # 1. Markdown table
+        if (stripped.startswith('|') and stripped.endswith('|')
+                and i + 1 < n
+                and re.match(r'^\s*\|[\s\-:|]+\|\s*$', lines[i+1])):
+            header_cells = [c.strip() for c in stripped.strip('|').split('|')]
+            i += 2
+            body_rows = []
+            while i < n:
+                row_line = lines[i].strip()
+                if row_line.startswith('|') and row_line.endswith('|'):
+                    cells = [c.strip() for c in row_line.strip('|').split('|')]
+                    while len(cells) < len(header_cells):
+                        cells.append('')
+                    body_rows.append(cells[:len(header_cells)])
+                    i += 1
+                else:
+                    break
+            # Render HTML table (NYT style)
+            th = ''.join(
+                f'<th class="num">{render_inline(h)}</th>' if idx > 0
+                else f'<th>{render_inline(h)}</th>'
+                for idx, h in enumerate(header_cells)
+            )
+            tr_html = ''
+            for row in body_rows:
+                cells_html = ''
+                for idx, c in enumerate(row):
+                    cls = 'num' if idx > 0 else 'name'
+                    cells_html += f'<td class="{cls}">{render_inline(c)}</td>'
+                tr_html += f'<tr>{cells_html}</tr>'
+            html_parts.append(
+                f'<table class="nyt"><thead><tr>{th}</tr></thead>'
+                f'<tbody>{tr_html}</tbody></table>'
+            )
+            continue
+
+        # 2. Horizontal rule → spacer
+        if re.match(r'^[-=*]{3,}$', stripped):
+            html_parts.append('<div class="hr-spacer"></div>')
+            i += 1
+            continue
+
+        # 3. Markdown heading
+        h_match = re.match(r'^(#{1,6})\s+(.+)$', stripped)
+        if h_match:
+            level = len(h_match.group(1))
+            text = h_match.group(2).rstrip('#').strip()
+            text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+            text = re.sub(r'\*(.+?)\*', r'\1', text)
+            text = html_lib.escape(text)
+            if level <= 2:
+                html_parts.append(f'<h3 class="md-h2">{text}</h3>')
+            elif level == 3:
+                html_parts.append(f'<h4 class="md-h3">{text}</h4>')
+            else:
+                html_parts.append(f'<h5 class="md-h4">{text}</h5>')
+            i += 1
+            continue
+
+        # 4. Blockquote
+        if stripped.startswith('>'):
+            quote_lines = []
+            while i < n and lines[i].strip().startswith('>'):
+                quote_lines.append(lines[i].strip()[1:].strip())
+                i += 1
+            quote_text = ' '.join(quote_lines)
+            html_parts.append(f'<blockquote class="md-quote">{render_inline(quote_text)}</blockquote>')
+            continue
+
+        # 5. Bullet list (collect contiguous)
+        if re.match(r'^[-*+]\s+', stripped):
+            items = []
+            while i < n and re.match(r'^[-*+]\s+', lines[i].strip()):
+                item_text = re.sub(r'^[-*+]\s+', '', lines[i].strip())
+                items.append(f'<li>{render_inline(item_text)}</li>')
+                i += 1
+            html_parts.append('<ul class="md-bullet">' + ''.join(items) + '</ul>')
+            continue
+
+        # 6. Numbered list
+        if re.match(r'^\d+[\.\)]\s+', stripped):
+            items = []
+            while i < n and re.match(r'^\d+[\.\)]\s+', lines[i].strip()):
+                item_text = re.sub(r'^\d+[\.\)]\s+', '', lines[i].strip())
+                items.append(f'<li>{render_inline(item_text)}</li>')
+                i += 1
+            html_parts.append('<ol class="md-ordered">' + ''.join(items) + '</ol>')
+            continue
+
+        # 7. Plain paragraph (collect contiguous non-empty, non-special lines)
+        para_lines = []
+        while i < n:
+            ln = lines[i].rstrip()
+            sl = ln.strip()
+            if not sl:
+                break
+            # Stop at any special block
+            if sl.startswith('#') or sl.startswith('|') or sl.startswith('>'):
+                break
+            if re.match(r'^[-*+]\s+|^\d+[\.\)]\s+', sl):
+                break
+            if re.match(r'^[-=*]{3,}$', sl):
+                break
+            para_lines.append(sl)
+            i += 1
+        if para_lines:
+            joined = ' '.join(para_lines)
+            html_parts.append(f'<p>{render_inline(joined)}</p>')
+
+    return '\n'.join(html_parts)
+
+
+_DETAILED_V3_CSS = r"""
+  /* ============================================================
+     WEB FONTS — Pretendard Variable (Korean primary)
+     - 한글 본문: Pretendard (현대적, 가독성, tabular-nums 지원)
+     - 영문 헤딩: Georgia 유지 (NYT 세리프 스타일)
+     - 영문 본문: Pretendard 내장 Latin (SF/Roboto 느낌)
+     ============================================================ */
+  @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css');
+
+  :root {
+    --font-body: 'Pretendard Variable', 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', sans-serif;
+    --font-heading: Georgia, 'Times New Roman', 'Pretendard Variable', 'Pretendard', serif;
+    --font-mono: 'JetBrains Mono', Consolas, 'Courier New', monospace;
+  }
+
+  /* ============================================================
+     PAGE MODEL
+     - @page margin defines uniform page margins on every page
+     - Cover/Exec/Final: fixed-height boxes inside the page margin
+       (no full bleed; the navy box sits inside white margins)
+     - 21 content sections: flow naturally with break-inside hints
+     ============================================================ */
+  @page {
+    size: A4;
+    margin: 14mm 18mm 14mm 18mm;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    font-family: var(--font-body);
+    font-feature-settings: 'tnum' 1, 'kern' 1;
+    color: #0a0e1a;
+    font-size: 10pt;
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Fixed pages (cover, exec, final) sit within @page margin.
+     Width 174mm = 210 - 18 - 18; Height 268mm = 297 - 14 - 14 - 1mm safety. */
+  .full-bleed {
+    width: 174mm;
+    height: 268mm;
+    padding: 14mm 14mm 14mm 14mm;
+    position: relative;
+    page-break-after: always;
+    overflow: hidden;
+  }
+  .full-bleed:last-of-type { page-break-after: auto; }
+  /* Final page must always start on a fresh page */
+  .full-bleed.final-page {
+    page-break-before: always;
+    break-before: page;
+  }
+
+  /* Cover background applied directly to the box */
+  .full-bleed.cover {
+    background: linear-gradient(165deg, #0b2545 0%, #0e2b55 45%, #122f5d 100%);
+    color: #f0f3f8;
+  }
+
+  /* Content sections — pure natural flow.
+     No break-inside, no break-before/after. Let chromium pack tightly.
+     Only protect tables from splitting (visual integrity).
+  */
+  .content-flow {}
+
+  .section-block {
+    margin-top: 0;
+    margin-bottom: 5mm;
+    padding-bottom: 3mm;
+    border-bottom: 1px solid #edf0f4;
+  }
+  .section-block:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+  }
+  .section-block .section-caption {
+    margin-top: 0;
+    margin-bottom: 0.5mm;
+  }
+  .section-block .section-heading {
+    margin-top: 0.5mm;
+    margin-bottom: 2.5mm;
+    font-size: 16pt;
+    line-height: 1.15;
+  }
+  .section-block .section-body > *:first-child {
+    margin-top: 0;
+  }
+  .section-block .section-body > *:last-child {
+    margin-bottom: 0;
+  }
+
+  /* Avoid orphans/widows + table integrity */
+  p { orphans: 2; widows: 2; margin: 1mm 0; }
+  table.nyt { page-break-inside: avoid; break-inside: avoid; }
+  blockquote.md-quote { page-break-inside: avoid; }
+
+  /* ---------- Cover absolute children — coordinates inside the 174x269 box ---------- */
+  .full-bleed.cover .accent-corner {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 80mm;
+    height: 80mm;
+    background: radial-gradient(circle at top right, rgba(184,146,46,0.18), transparent 70%);
+    pointer-events: none;
+    z-index: 0;
+  }
+  .full-bleed.cover .pick-box {
+    left: 14mm;
+    right: 14mm;
+    bottom: 28mm;
+  }
+  .full-bleed.cover .cover-footer {
+    left: 14mm;
+    right: 14mm;
+    bottom: 10mm;
+  }
+  .full-bleed.cover .cover-body {
+    margin-top: 34mm;
+    position: relative;
+    z-index: 1;
+  }
+  .cover .brand-bar {
+    display: flex;
+    justify-content: space-between;
+    padding-bottom: 5mm;
+    border-bottom: 1px solid rgba(184,146,46,0.6);
+    font-size: 8.5pt;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    color: #b8922e;
+    font-weight: 700;
+  }
+  .cover .cover-body { margin-top: 48mm; }
+  .cover .cap-gold {
+    color: #b8922e;
+    font-size: 9pt;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    font-weight: 600;
+  }
+  .cover h1.stock-title {
+    font-family: var(--font-heading);
+    font-size: 52pt;
+    font-weight: 300;
+    margin: 5mm 0 3mm 0;
+    line-height: 0.95;
+    color: #ffffff;
+    letter-spacing: -1px;
+  }
+  .cover .stock-meta {
+    font-size: 11pt;
+    color: #b8c3d4;
+    letter-spacing: 1px;
+    font-weight: 300;
+  }
+  .cover .tagline {
+    margin-top: 14mm;
+    font-family: var(--font-heading);
+    font-size: 17pt;
+    font-weight: 300;
+    line-height: 1.4;
+    color: #e0e6f0;
+    max-width: 145mm;
+    font-style: italic;
+  }
+  .cover .pick-box {
+    position: absolute;
+    left: 22mm;
+    right: 22mm;
+    bottom: 42mm;
+    border: 1px solid rgba(184,146,46,0.7);
+    padding: 6mm 7mm;
+    background: rgba(0,0,0,0.18);
+  }
+  .cover .pick-label {
+    color: #b8922e;
+    font-size: 8pt;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+  .cover .pick-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 4mm;
+  }
+  .cover .pick-badge {
+    display: inline-block;
+    padding: 3mm 8mm;
+    font-size: 16pt;
+    font-weight: 700;
+    color: #ffffff;
+    letter-spacing: 2px;
+  }
+  .cover .pick-metrics {
+    text-align: right;
+    font-size: 10pt;
+    color: #e0e6f0;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.55;
+  }
+  .cover .pick-metrics .big {
+    font-size: 14pt;
+    font-weight: 600;
+    color: #ffffff;
+  }
+  .cover .cover-footer {
+    position: absolute;
+    left: 22mm;
+    right: 22mm;
+    bottom: 18mm;
+    font-size: 7.5pt;
+    letter-spacing: 1.5px;
+    color: #8593aa;
+    text-transform: uppercase;
+    display: flex;
+    justify-content: space-between;
+    padding-top: 4mm;
+    border-top: 1px solid rgba(184,146,46,0.3);
+  }
+
+  /* ---------- Running header ---------- */
+  .running-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-bottom: 3mm;
+    margin-bottom: 7mm;
+    border-bottom: 1px solid #e4e7ec;
+    font-size: 7.5pt;
+    color: #7a8699;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  .running-header .brand { font-weight: 700; color: #0b2545; letter-spacing: 2.5px; }
+
+  /* ---------- Section caption + heading ---------- */
+  .section-caption {
+    color: #b8922e;
+    font-size: 8.5pt;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    font-weight: 700;
+    margin-top: 0;
+  }
+  .section-heading {
+    font-family: var(--font-heading);
+    font-size: 24pt;
+    font-weight: 300;
+    color: #0b2545;
+    margin: 2mm 0 6mm 0;
+    line-height: 1.15;
+    letter-spacing: -0.3px;
+  }
+
+  /* ---------- Markdown headings (rendered from ## ### in body) ---------- */
+  .md-h2 {
+    font-family: var(--font-heading);
+    font-size: 12pt;
+    font-weight: 600;
+    color: #0b2545;
+    margin: 4mm 0 1.5mm 0;
+    padding-left: 3mm;
+    border-left: 3px solid #b8922e;
+    line-height: 1.3;
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+  .md-h3 {
+    font-size: 10pt;
+    font-weight: 700;
+    color: #0b2545;
+    margin: 3mm 0 1mm 0;
+    line-height: 1.3;
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+  .md-h4 {
+    font-size: 9.5pt;
+    font-weight: 700;
+    color: #3a4658;
+    margin: 2.5mm 0 1mm 0;
+    page-break-after: avoid;
+  }
+
+  /* ---------- Body paragraph ---------- */
+  p {
+    margin: 1.5mm 0;
+    color: #2a3342;
+    font-size: 9.5pt;
+    line-height: 1.65;
+    text-align: left;
+  }
+  strong { color: #0b2545; font-weight: 700; }
+  em { font-style: italic; color: #2a3342; }
+  code {
+    font-family: var(--font-mono);
+    font-size: 8.5pt;
+    background: #f4f6f9;
+    padding: 0.5mm 1.5mm;
+    border-radius: 1mm;
+  }
+
+  /* ---------- Bullet / Numbered list ---------- */
+  ul.md-bullet, ol.md-ordered {
+    margin: 2mm 0 3mm 0;
+    padding-left: 6mm;
+  }
+  ul.md-bullet li, ol.md-ordered li {
+    margin: 1mm 0;
+    color: #2a3342;
+    font-size: 9.5pt;
+    line-height: 1.6;
+  }
+
+  /* ---------- Blockquote ---------- */
+  blockquote.md-quote {
+    margin: 4mm 0;
+    padding: 3mm 5mm;
+    background: #fafbfc;
+    border-left: 3px solid #b8922e;
+    font-family: var(--font-heading);
+    font-style: italic;
+    font-size: 10pt;
+    line-height: 1.65;
+    color: #2a3342;
+  }
+
+  /* ---------- HR spacer ---------- */
+  .hr-spacer {
+    height: 0;
+    margin: 4mm 0;
+    border-top: 1px dashed #e4e7ec;
+  }
+
+  /* ---------- NYT/Bloomberg Table ---------- */
+  table.nyt {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 8.5pt;
+    margin: 3mm 0 4mm 0;
+    page-break-inside: avoid;
+  }
+  table.nyt thead tr {
+    border-top: 2px solid #0b2545;
+    border-bottom: 1px solid #0b2545;
+  }
+  table.nyt thead th {
+    padding: 1.8mm 2.5mm;
+    text-align: left;
+    font-size: 7pt;
+    color: #7a8699;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-weight: 700;
+  }
+  table.nyt thead th.num { text-align: right; }
+  table.nyt tbody tr { border-bottom: 1px solid #edf0f4; }
+  table.nyt tbody tr:last-child { border-bottom: 2px solid #0b2545; }
+  table.nyt tbody td {
+    padding: 1.8mm 2.5mm;
+    color: #0a0e1a;
+    font-size: 8.5pt;
+    line-height: 1.45;
+  }
+  table.nyt tbody td.num {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  table.nyt tbody td.name { font-weight: 600; color: #0b2545; }
+
+  /* ---------- Verdict Card (Page 2) ---------- */
+  .verdict-card {
+    border: 1px solid #e4e7ec;
+    margin-top: 2mm;
+    page-break-inside: avoid;
+  }
+  .verdict-head {
+    background: #0b2545;
+    color: #ffffff;
+    padding: 3.5mm 5mm;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 9pt;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+  }
+  .verdict-head .title { font-weight: 700; }
+  .verdict-rating-badge {
+    color: #ffffff;
+    padding: 1.8mm 5mm;
+    font-weight: 700;
+    font-size: 12pt;
+    letter-spacing: 2px;
+  }
+  .verdict-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+  }
+  .verdict-cell {
+    padding: 4mm 5mm 4mm 5mm;
+    border-right: 1px solid #e4e7ec;
+    border-bottom: 1px solid #e4e7ec;
+  }
+  .verdict-cell.last-col { border-right: none; }
+  .verdict-cell.last-row { border-bottom: none; }
+  .verdict-cell .lbl {
+    font-size: 7pt;
+    color: #7a8699;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    font-weight: 700;
+  }
+  .verdict-cell .val {
+    font-family: var(--font-heading);
+    font-size: 16pt;
+    font-weight: 400;
+    color: #0b2545;
+    margin-top: 1mm;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.15;
+  }
+  .verdict-cell .delta {
+    font-size: 8pt;
+    color: #7a8699;
+    margin-top: 0.5mm;
+    font-variant-numeric: tabular-nums;
+  }
+  .verdict-cell .delta.pos { color: #2a6b4a; }
+  .verdict-cell .delta.neg { color: #8b2e2e; }
+
+  /* ---------- Core thesis / Final call ---------- */
+  .core-thesis {
+    margin-top: 6mm;
+    padding: 5mm 6mm;
+    background: #fafbfc;
+    border-left: 3px solid #b8922e;
+    font-family: var(--font-heading);
+    font-size: 10.5pt;
+    font-style: italic;
+    line-height: 1.7;
+    color: #2a3342;
+  }
+  .core-thesis::before {
+    content: "Core Thesis";
+    display: block;
+    font-family: var(--font-body);
+    font-size: 7.5pt;
+    color: #b8922e;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    font-weight: 700;
+    margin-bottom: 2mm;
+    font-style: normal;
+  }
+  .final-call {
+    margin-top: 12mm;
+    border-top: 4px double #0b2545;
+    border-bottom: 4px double #0b2545;
+    padding: 7mm 9mm;
+    page-break-inside: avoid;
+  }
+  .final-call .caption {
+    color: #b8922e;
+    font-size: 8pt;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+  .final-call .conclusion {
+    margin-top: 3mm;
+    font-family: var(--font-heading);
+    font-style: italic;
+    font-size: 13pt;
+    line-height: 1.55;
+    color: #0b2545;
+  }
+  .final-call .signature {
+    margin-top: 5mm;
+    font-size: 8.5pt;
+    color: #7a8699;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* ---------- TOC ---------- */
+  .toc {
+    margin-top: 4mm;
+    columns: 2;
+    column-gap: 10mm;
+  }
+  .toc-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 2mm 0;
+    border-bottom: 1px dotted #e4e7ec;
+    font-size: 9pt;
+    color: #2a3342;
+    break-inside: avoid;
+  }
+  .toc-item .num {
+    color: #b8922e;
+    font-weight: 700;
+    width: 8mm;
+  }
+  .toc-item .title { flex: 1; }
+  .toc-item .pg { color: #7a8699; font-variant-numeric: tabular-nums; }
+
+  /* ---------- Page footer ---------- */
+  .page-footer {
+    position: absolute;
+    left: 20mm;
+    right: 20mm;
+    bottom: 12mm;
+    padding-top: 3mm;
+    border-top: 1px solid #e4e7ec;
+    display: flex;
+    justify-content: space-between;
+    font-size: 7pt;
+    color: #9ca6b5;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+  }
+
+  /* ---------- Section page wrapper ---------- */
+  .section-block {
+    margin-bottom: 8mm;
+  }
+  .section-block:first-child { margin-top: 0; }
+"""
+
+
+_SECTION_TITLES_DETAILED = [
+    ("s01_opinion",            "01", "Investment Opinion",       "투자의견 & 목표주가"),
+    ("s02_investment_points",  "02", "Investment Thesis",        "투자 포인트"),
+    ("s03_company_overview",   "03", "Company Overview",         "회사 개요 & 비즈니스 모델"),
+    ("s04_industry",           "04", "Industry & Market",        "산업 & 시장"),
+    ("s05_competition",        "05", "Competitive Landscape",    "경쟁 구도 & Peer"),
+    ("s06_moat",               "06", "Economic Moat",            "경제적 해자"),
+    ("s07_management",         "07", "Management",               "경영진 & 지배구조"),
+    ("s08_financial",          "08", "Financial Analysis",       "재무 분석"),
+    ("s09_valuation",          "09", "Valuation",                "밸류에이션"),
+    ("s10_macro",              "10", "Macro Risks",              "매크로 리스크"),
+    ("s11_catalysts",          "11", "Catalyst Timeline",        "카탈리스트 타임라인"),
+    ("s12_scenarios",          "12", "Scenarios",                "Bear / Base / Bull"),
+    ("s13_thesis",             "13", "Investment Thesis",        "투자 논문"),
+    ("s14_short_thesis",       "14", "Short Thesis",             "숏 논거 + 반박"),
+    ("s15_beat_miss",          "15", "Earnings Beat / Miss",     "실적 Beat/Miss"),
+    ("s16_consensus",          "16", "Analyst Consensus",        "애널리스트 컨센서스"),
+    ("s17_supply",             "17", "Supply & Demand",          "수급 분석"),
+    ("s18_shareholder_return", "18", "Shareholder Return",       "주주환원 정책"),
+    ("s19_trust_worry_watch",  "19", "Trust / Worry / Watch",    "신뢰 / 우려 / 관찰"),
+    ("s20_action_plan",        "20", "Action Plan",              "실행 계획"),
+    ("s21_reliability",        "21", "Reliability",              "분석 신뢰도 & 한계"),
+]
+
+
+def _generate_detailed_v3(data, output_dir):
+    """Single institutional-grade PDF: cover + TOC + 21 sections + final call.
+
+    Design: Navy/Gold palette, NYT/Bloomberg-style tables, full markdown rendering,
+    emoji stripped throughout.
+    """
+    meta = data["meta"]
+    price = data["price"]
+    opinion = data["opinion"]
+    sections = data["sections"]
+    fin = data["financials"]
+
+    name = meta["stock_name"].replace(" ", "")
+    is_kr = meta["country"] == "KR"
+
+    def fmt_money(v):
+        if v is None:
+            return "N/A"
+        if is_kr:
+            return f'{int(v):,}원'
+        return f'${float(v):,.2f}'
+
+    def safe(v, default="—"):
+        return default if v is None else v
+
+    cur_price = price.get("current") or 1
+    up_base = ((opinion["target_base"] - cur_price) / cur_price) * 100
+    up_bull = ((opinion["target_bull"] - cur_price) / cur_price) * 100
+    down_bear = ((opinion["target_bear"] - cur_price) / cur_price) * 100
+    rating = opinion.get("rating", "HOLD")
+    rr = opinion.get("risk_reward", "—")
+    rating_color = {"BUY": "#2a6b4a", "HOLD": "#b8922e", "SELL": "#8b2e2e"}.get(rating, "#b8922e")
+
+    # ---- 52-week range
+    hi_52 = price.get("high_52w")
+    lo_52 = price.get("low_52w")
+    if hi_52 and lo_52 and is_kr:
+        range_str = f"{int(lo_52):,} – {int(hi_52):,}"
+    elif hi_52 and lo_52:
+        range_str = f"${lo_52:,.2f} – ${hi_52:,.2f}"
+    else:
+        range_str = "—"
+
+    # ---- Tagline (cover)
+    tagline = meta.get("subtitle")
+    if not tagline:
+        industry = meta.get('industry', '')
+        if rating == "BUY":
+            tagline = f"{industry}의 비대칭 기회"
+        elif rating == "SELL":
+            tagline = f"{industry}에서 가격이 내러티브를 앞서가다"
+        else:
+            tagline = f"{industry} · Balance of risk tilts to the downside"
+    tagline = _strip_emoji(tagline)
+
+    # ---- R/R short text
+    rr_short = str(rr)
+    if len(rr_short) > 18:
+        rr_short = rr_short.split('(')[0].strip() or rr_short[:18]
+
+    # ---- Core thesis & final conclusion
+    core_thesis = _sv2_first_para(sections.get("s13_thesis", "") or sections.get("s01_opinion", ""), 320)
+    final_conclusion = _sv2_first_para(sections.get("s13_thesis", "") or sections.get("s01_opinion", ""), 360)
+
+    # =====================================================================
+    # PAGE 1 — COVER
+    # =====================================================================
+    cover_html = f"""
+<section class="full-bleed cover">
+  <div class="accent-corner"></div>
+  <div class="brand-bar">
+    <div>Equity Research · Institutional Grade</div>
+    <div>{html_lib.escape(meta.get("date",""))}</div>
+  </div>
+  <div class="cover-body">
+    <div class="cap-gold">— Equity Research Note —</div>
+    <h1 class="stock-title">{html_lib.escape(meta.get("stock_name",""))}</h1>
+    <div class="stock-meta">{html_lib.escape(meta.get("stock_code",""))} &nbsp;·&nbsp; {html_lib.escape(meta.get("industry",""))}</div>
+    <div class="tagline">{html_lib.escape(tagline)}</div>
+  </div>
+  <div class="pick-box">
+    <div class="pick-label">Our Call</div>
+    <div class="pick-row">
+      <div>
+        <span class="pick-badge" style="background:{rating_color};">{html_lib.escape(rating)}</span>
+      </div>
+      <div class="pick-metrics">
+        <div>Target (Base) &nbsp; <span class="big">{fmt_money(opinion["target_base"])}</span></div>
+        <div>Current &nbsp; {fmt_money(cur_price)} &nbsp;·&nbsp; Upside {up_base:+.1f}%</div>
+        <div>Risk · Reward &nbsp; {html_lib.escape(rr_short)}</div>
+      </div>
+    </div>
+  </div>
+  <div class="cover-footer">
+    <span>Framework · 5-Layer Analysis · Q1–Q10 Quant Protocol</span>
+    <span>Single-Agent Research v4</span>
+  </div>
+</section>
+"""
+
+    # =====================================================================
+    # PAGE 2 — Executive Summary (Verdict + Core Thesis + TOC)
+    # =====================================================================
+    down_cls = "neg" if down_bear < 0 else "pos"
+    up_cls = "pos" if up_base > 0 else "neg"
+    bull_cls = "pos" if up_bull > 0 else "neg"
+
+    toc_items_html = ''
+    for idx, (key, num, en, ko) in enumerate(_SECTION_TITLES_DETAILED, start=1):
+        toc_items_html += (
+            f'<div class="toc-item">'
+            f'<span class="num">{num}</span>'
+            f'<span class="title">{html_lib.escape(ko)}</span>'
+            f'<span class="pg">p.{idx + 2}</span>'
+            f'</div>'
+        )
+
+    exec_html = f"""
+<section class="full-bleed exec-page">
+  <div class="running-header">
+    <div class="brand">{html_lib.escape(meta.get("stock_name",""))} · Equity Research</div>
+    <div>EXECUTIVE SUMMARY</div>
+  </div>
+
+  <div class="section-caption">00 · EXECUTIVE SUMMARY</div>
+  <h2 class="section-heading">투자의견 요약</h2>
+
+  <div class="verdict-card">
+    <div class="verdict-head">
+      <div class="title">Investment Verdict</div>
+      <div class="verdict-rating-badge" style="background:{rating_color};">{html_lib.escape(rating)}</div>
+    </div>
+    <div class="verdict-grid">
+      <div class="verdict-cell">
+        <div class="lbl">Current Price</div>
+        <div class="val">{fmt_money(cur_price)}</div>
+        <div class="delta">52W {html_lib.escape(range_str)}</div>
+      </div>
+      <div class="verdict-cell">
+        <div class="lbl">Target · Base</div>
+        <div class="val">{fmt_money(opinion["target_base"])}</div>
+        <div class="delta {up_cls}">{up_base:+.1f}%</div>
+      </div>
+      <div class="verdict-cell last-col">
+        <div class="lbl">Target · Bull</div>
+        <div class="val">{fmt_money(opinion["target_bull"])}</div>
+        <div class="delta {bull_cls}">{up_bull:+.1f}%</div>
+      </div>
+      <div class="verdict-cell last-row">
+        <div class="lbl">Target · Bear</div>
+        <div class="val">{fmt_money(opinion["target_bear"])}</div>
+        <div class="delta {down_cls}">{down_bear:+.1f}%</div>
+      </div>
+      <div class="verdict-cell last-row">
+        <div class="lbl">Market Cap</div>
+        <div class="val">{html_lib.escape(str(price.get("market_cap","—")))}</div>
+        <div class="delta">PER {safe(price.get("per"))} · PBR {safe(price.get("pbr"))}</div>
+      </div>
+      <div class="verdict-cell last-col last-row">
+        <div class="lbl">Risk · Reward</div>
+        <div class="val">{html_lib.escape(rr_short)}</div>
+        <div class="delta">Div Yield {safe(price.get("dividend_yield"),"—")}%</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="core-thesis">{core_thesis}</div>
+
+  <h3 class="md-h2" style="margin-top:9mm;">Table of Contents</h3>
+  <div class="toc">{toc_items_html}</div>
+
+  <div class="page-footer">
+    <span>{html_lib.escape(meta.get("stock_name",""))} · Executive Summary</span>
+    <span>Page 02</span>
+  </div>
+</section>
+"""
+
+    # =====================================================================
+    # SECTION CONTENT — natural flow, no forced page breaks
+    # Sections flow continuously after the executive page; chromium decides
+    # page breaks automatically based on content height + break-inside hints.
+    # =====================================================================
+    section_blocks_html = '<div class="content-flow">\n'
+    for idx, (key, num, en, ko) in enumerate(_SECTION_TITLES_DETAILED, start=1):
+        body_md = sections.get(key, "")
+        body_html = _md_to_html_blocks(body_md)
+        if not body_html:
+            body_html = '<p style="color:#9ca6b5;font-style:italic;">— 본 섹션의 콘텐츠가 비어있습니다 —</p>'
+
+        section_blocks_html += f"""
+<div class="section-block">
+  <div class="section-caption">{num} · {html_lib.escape(en.upper())}</div>
+  <h2 class="section-heading">{html_lib.escape(ko)}</h2>
+  <div class="section-body">
+    {body_html}
+  </div>
+</div>
+"""
+    section_blocks_html += '</div>\n'
+
+    # =====================================================================
+    # FINAL CALL PAGE
+    # =====================================================================
+    final_html = f"""
+<section class="full-bleed final-page">
+  <div class="running-header">
+    <div class="brand">{html_lib.escape(meta.get("stock_name",""))} · Equity Research</div>
+    <div>FINAL CALL</div>
+  </div>
+
+  <div class="section-caption">— FINAL CALL —</div>
+  <h2 class="section-heading">최종 결론</h2>
+
+  <div class="final-call">
+    <div class="caption">— Final Call —</div>
+    <div class="conclusion">{final_conclusion}</div>
+    <div class="signature">
+      <span>Equity Research · Single-Agent v4</span>
+      <span>{html_lib.escape(meta.get("date",""))}</span>
+    </div>
+  </div>
+
+  <div class="page-footer">
+    <span>{html_lib.escape(meta.get("stock_name",""))} · End of Report</span>
+    <span>End</span>
+  </div>
+</section>
+"""
+
+    # =====================================================================
+    # ASSEMBLE
+    # =====================================================================
+    html = f"""<!DOCTYPE html>
+<html lang="ko"><head><meta charset="UTF-8">
+<title>{html_lib.escape(meta.get("stock_name",""))} — Equity Research (Detailed)</title>
+<style>{_DETAILED_V3_CSS}</style>
+</head><body>
+{cover_html}
+{exec_html}
+{section_blocks_html}
+{final_html}
+</body></html>
+"""
+
+    html_path = os.path.join(output_dir, f'report_{name}_상세.html')
+    with open(html_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+
+    # PDF conversion via Playwright
+    try:
+        from playwright.sync_api import sync_playwright
+        pdf_path = os.path.join(output_dir, f'report_{name}_상세.pdf')
+        file_url = "file:///" + os.path.abspath(html_path).replace("\\", "/")
+        with sync_playwright() as p:
+            browser = p.chromium.launch()
+            page = browser.new_page()
+            page.goto(file_url)
+            page.pdf(
+                path=pdf_path,
+                format="A4",
+                margin={"top": "0mm", "bottom": "0mm", "left": "0mm", "right": "0mm"},
+                print_background=True,
+                prefer_css_page_size=True,
+            )
+            browser.close()
+        os.remove(html_path)
+        print(f'[OK] 상세 PDF (v3): {pdf_path} ({os.path.getsize(pdf_path)//1024} KB)')
+    except Exception as e:
+        print(f'[!!] PDF 변환 실패: {e}, HTML 파일은 유지됨 ({html_path})')
+
+
+# ============================================
+# 3. 대시보드 (HTML, deprecated — kept for reference)
+# ============================================
+def generate_dashboard(data, output_dir):
+    meta = data["meta"]
+    price = data["price"]
+    opinion = data["opinion"]
+    fin = data["financials"]
+    segs = data["segments"]
+    peers = data.get("peers", [])
+    catalysts = data.get("catalysts", [])
+    supply = data.get("supply", {})
+    sections = data["sections"]
+
+    name = meta["stock_name"].replace(" ", "")
+    is_kr = meta["country"] == "KR"
+    c = meta["currency"] if is_kr else "$"
+
+    def fmt(val):
+        return f'{val:,}{c}' if is_kr else f'${val:,}'
+
+    rating_class = {"BUY": "tag-buy", "HOLD": "tag-hold", "SELL": "tag-sell"}.get(opinion["rating"], "tag-hold")
+    rating_bg = {"BUY": "#4caf50", "HOLD": "#ff9800", "SELL": "#f44336"}.get(opinion["rating"], "#ff9800")
+
+    # 차트 데이터
+    daily = price.get("daily_prices", [])
+    if daily:
+        chart_closes = [d.get("종가", d.get("close", 0)) for d in sorted(daily, key=lambda x: x.get("날짜", x.get("date", "")))]
+    else:
+        chart_closes = [price["current"]]
+    chart_js = json.dumps(chart_closes)
+
+    chart_min = min(min(chart_closes) * 0.85, opinion["target_bear"] * 0.9)
+    chart_max = max(max(chart_closes) * 1.15, opinion["target_bull"] * 1.1)
+
+    # 사업부 바
+    seg_bars = ''
+    colors = ['#1565c0,#42a5f5', '#7c4dff,#b388ff', '#00897b,#4db6ac', '#ff7043,#ffab91', '#ffc107,#ffeb3b']
+    for i, s in enumerate(segs):
+        color = colors[i % len(colors)]
+        seg_bars += f'''
+        <div style="display:flex; align-items:center; margin:8px 0;">
+          <span style="width:120px; font-size:11px;">{s["name"]}</span>
+          <div style="flex:1; height:24px; background:#1a237e; border-radius:4px; position:relative;">
+            <div style="width:{s["pct"]}%; height:100%; background:linear-gradient(90deg, {color}); border-radius:4px; min-width:25px;"></div>
+            <span style="position:absolute; right:5px; top:3px; font-size:11px;">{s["pct"]}%</span>
+          </div>
+        </div>'''
+
+    # Forward 테이블
+    fin_header = ''.join(f'<th>{h}</th>' for h in fin["headers"][1:])  # 항목 제외
+    fin_rows_html = ''
+    for row in fin["rows"][:4]:  # 매출, 영업이익, OPM, EPS만
+        cells = ''.join(f'<td>{v}</td>' for v in row[1:])
+        fin_rows_html += f'<tr><td>{row[0]}</td>{cells}</tr>'
+
+    # Peer 바
+    peer_bars = ''
+    if peers:
+        def parse_cap(s):
+            s = s.replace("조","").replace("$","").replace("B","").replace("원","").strip()
+            if "T" in s:
+                return float(s.replace("T","")) * 1000
+            try:
+                return float(s)
+            except:
+                return 1
+        max_cap = max(parse_cap(p["market_cap"]) for p in peers)
+        for p in peers:
+            cap_val = parse_cap(p["market_cap"])
+            pct = (cap_val / max_cap) * 100
+            hl_color = '#ffc107' if p.get("highlight") else '#42a5f5'
+            hl_font = 'color:#ffc107; font-weight:bold;' if p.get("highlight") else ''
+            peer_bars += f'''
+            <div style="display:flex; align-items:center; margin:8px 0;">
+              <span style="width:90px; font-size:12px; {hl_font}">{p["name"]}</span>
+              <div style="flex:1; height:24px; background:#1a237e; border-radius:4px; position:relative;">
+                <div style="width:{pct:.0f}%; height:100%; background:linear-gradient(90deg, {hl_color.replace('#ffc107','#ff9800,#ffc107').replace('#42a5f5','#1565c0,#42a5f5')}); border-radius:4px; min-width:20px;"></div>
+                <span style="position:absolute; right:5px; top:3px; font-size:11px;">{p["market_cap"]}</span>
+              </div>
+            </div>'''
+
+    # 카탈리스트 타임라인
+    cat_items = ''
+    for ct in catalysts:
+        cat_items += f'''
+        <div class="timeline-item">
+          <div class="timeline-date">{ct["date"]}</div>
+          <div class="timeline-event">{ct["event"]}</div>
+        </div>'''
+
+    # 수급
+    supply_html = ''
+    if supply:
+        def supply_bar(val, max_val):
+            pct = min(abs(val) / max(abs(supply["foreign"]), abs(supply["institution"]), abs(supply["individual"]), 1) * 100, 100)
+            color = '#66bb6a' if val > 0 else '#ef5350'
+            return f'<div style="height:8px; background:#1a237e; border-radius:4px;"><div style="width:{pct:.0f}%; height:100%; background:{color}; border-radius:4px;"></div></div>'
+
+        supply_html = f'''
+    <div class="card">
+      <div class="card-title">수급 동향 (최근 {supply.get("days",20)}일)</div>
+      <div style="margin-top:15px;">
+        <div style="display:flex; justify-content:space-between; margin-bottom:5px;">
+          <span style="font-size:12px;">외국인</span>
+          <span class="{"positive" if supply["foreign"]>0 else "negative"}" style="font-size:12px;">{supply["foreign"]:+,}주</span>
+        </div>
+        {supply_bar(supply["foreign"], 1)}
+        <div style="display:flex; justify-content:space-between; margin:12px 0 5px;">
+          <span style="font-size:12px;">기관</span>
+          <span class="{"positive" if supply["institution"]>0 else "negative"}" style="font-size:12px;">{supply["institution"]:+,}주</span>
+        </div>
+        {supply_bar(supply["institution"], 1)}
+        <div style="display:flex; justify-content:space-between; margin:12px 0 5px;">
+          <span style="font-size:12px;">개인</span>
+          <span class="{"positive" if supply["individual"]>0 else "negative"}" style="font-size:12px;">{supply["individual"]:+,}주</span>
+        </div>
+        {supply_bar(supply["individual"], 1)}
+      </div>
+      <div style="font-size:11px; color:#90a4ae; text-align:center; margin-top:10px;">{supply.get("comment","")}</div>
+    </div>'''
+
+    # Trust/Worry/Watch 파싱
+    tww = sections.get("s19_trust_worry_watch", "")
+    trust_items = worry_items = watch_items = ''
+    for line in tww.split('\n'):
+        line = line.strip()
+        if not line or line.startswith('Trust') or line.startswith('Worry') or line.startswith('Watch'):
+            continue
+        if line.startswith('1)') or line.startswith('2)') or line.startswith('3)'):
+            # Determine which section based on position
+            pass
+    # 간단하게 3개씩 분배
+    tww_lines = [l.strip() for l in tww.split('\n') if l.strip() and not l.strip().startswith(('Trust', 'Worry', 'Watch'))]
+    trust_list = [l for l in tww_lines if any(l.startswith(f'{i})') for i in range(1,4))]
+    sections_split = []
+    current = []
+    for l in tww_lines:
+        if l.startswith('1)') and current:
+            sections_split.append(current)
+            current = []
+        current.append(l)
+    if current:
+        sections_split.append(current)
+
+    if len(sections_split) >= 3:
+        trust_items = ''.join(f'<div class="trust-item trust-green">{l}</div>' for l in sections_split[0])
+        worry_items = ''.join(f'<div class="trust-item trust-red">{l}</div>' for l in sections_split[1])
+        watch_items = ''.join(f'<div class="trust-item trust-yellow">{l}</div>' for l in sections_split[2])
+    else:
+        trust_items = '<div class="trust-item trust-green">데이터 확인 필요</div>'
+        worry_items = '<div class="trust-item trust-red">데이터 확인 필요</div>'
+        watch_items = '<div class="trust-item trust-yellow">데이터 확인 필요</div>'
+
+    html = f'''<!DOCTYPE html>
+<html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{meta["stock_name"]} ({meta["stock_code"]}) - Dashboard</title>
+<style>
+  * {{ margin:0; padding:0; box-sizing:border-box; }}
+  body {{ font-family:'Malgun Gothic','Segoe UI',sans-serif; background:#0a0e27; color:#e0e0e0; }}
+  .dashboard {{ max-width:1400px; margin:0 auto; padding:20px; }}
+  .header {{ text-align:center; padding:30px 0 20px; border-bottom:2px solid #1a237e; margin-bottom:20px; }}
+  .header h1 {{ font-size:28px; color:#64b5f6; }}
+  .header .subtitle {{ color:#90a4ae; font-size:14px; margin-top:5px; }}
+  .verdict-bar {{ display:flex; justify-content:center; gap:20px; margin:15px 0; flex-wrap:wrap; }}
+  .verdict-tag {{ padding:8px 24px; border-radius:20px; font-weight:bold; font-size:14px; }}
+  .tag-buy {{ background:#4caf50; color:#fff; }}
+  .tag-hold {{ background:#ff9800; color:#000; }}
+  .tag-price {{ background:#1a237e; color:#64b5f6; border:1px solid #64b5f6; }}
+  .tag-type {{ background:#311b92; color:#b388ff; }}
+  .grid {{ display:grid; grid-template-columns:repeat(4,1fr); gap:15px; margin-bottom:20px; }}
+  .card {{ background:#131736; border-radius:12px; padding:20px; border:1px solid #1a237e; }}
+  .card-title {{ font-size:11px; color:#90a4ae; text-transform:uppercase; letter-spacing:1px; margin-bottom:8px; }}
+  .card-value {{ font-size:28px; font-weight:bold; color:#64b5f6; }}
+  .card-sub {{ font-size:12px; color:#78909c; margin-top:4px; }}
+  .positive {{ color:#66bb6a; }} .negative {{ color:#ef5350; }}
+  .grid-2 {{ display:grid; grid-template-columns:1fr 1fr; gap:15px; margin-bottom:20px; }}
+  .grid-3 {{ display:grid; grid-template-columns:1fr 1fr 1fr; gap:15px; margin-bottom:20px; }}
+  table {{ width:100%; border-collapse:collapse; font-size:13px; }}
+  th {{ background:#1a237e; color:#64b5f6; padding:10px; text-align:center; font-size:11px; }}
+  td {{ padding:8px 10px; border-bottom:1px solid #1a237e; text-align:center; }}
+  .scenario-box {{ padding:15px; border-radius:8px; margin:8px 0; }}
+  .bear-bg {{ background:#1a0a0a; border:1px solid #b71c1c; }}
+  .base-bg {{ background:#1a1a0a; border:1px solid #f9a825; }}
+  .bull-bg {{ background:#0a1a0a; border:1px solid #2e7d32; }}
+  .timeline {{ position:relative; padding-left:30px; }}
+  .timeline-item {{ position:relative; padding:10px 0; border-left:2px solid #1a237e; padding-left:20px; }}
+  .timeline-item::before {{ content:''; position:absolute; left:-7px; top:14px; width:12px; height:12px; border-radius:50%; background:#64b5f6; }}
+  .timeline-date {{ font-size:11px; color:#64b5f6; font-weight:bold; }}
+  .timeline-event {{ font-size:13px; color:#e0e0e0; margin-top:3px; }}
+  .trust-item {{ padding:8px 12px; margin:5px 0; border-radius:6px; font-size:13px; }}
+  .trust-green {{ background:#0a1a0a; border-left:3px solid #66bb6a; }}
+  .trust-red {{ background:#1a0a0a; border-left:3px solid #ef5350; }}
+  .trust-yellow {{ background:#1a1a0a; border-left:3px solid #ffc107; }}
+</style></head><body>
+<div class="dashboard">
+  <div class="header">
+    <h1>{meta["stock_name"]} ({meta["stock_code"]})</h1>
+    <div class="subtitle">{meta["industry"]} | {meta["market"]} | {meta["date"]} 기준</div>
+    <div class="verdict-bar">
+      <span class="verdict-tag {rating_class}">{opinion["rating"]}</span>
+      <span class="verdict-tag tag-price">목표가 {fmt(opinion["target_base"])}</span>
+      <span class="verdict-tag tag-type">{opinion["type"]}</span>
+    </div>
+  </div>
+
+  <div class="grid">
+    <div class="card"><div class="card-title">현재가</div><div class="card-value">{fmt(price["current"])}</div><div class="card-sub">등락률 {price["change_pct"]:+.2f}%</div></div>
+    <div class="card"><div class="card-title">시가총액</div><div class="card-value">{price["market_cap"]}</div><div class="card-sub">52주 {price["low_52w"]:,}~{price["high_52w"]:,}</div></div>
+    <div class="card"><div class="card-title">PER</div><div class="card-value">{price["per"]}x</div><div class="card-sub">EPS {price["eps"]:,}</div></div>
+    <div class="card"><div class="card-title">PBR</div><div class="card-value">{price["pbr"]}x</div><div class="card-sub">BPS {price["bps"]:,}</div></div>
+  </div>
+
+  <div class="card" style="margin-bottom:20px;">
+    <div class="card-title">주가 추이 + 목표주가 밴드</div>
+    <canvas id="priceChart" height="220"></canvas>
+  </div>
+
+  <div class="grid-3">
+    <div class="card"><div class="card-title">사업부별 매출 비중</div>{seg_bars}<div style="font-size:10px; color:#546e7a; margin-top:8px;">출처: DART/SEC 사업보고서 기반 추정</div></div>
+    <div class="card"><div class="card-title">Forward 실적 추정</div>
+      <table style="font-size:11px;"><tr><th>항목</th>{fin_header}</tr>{fin_rows_html}</table>
+      <div style="font-size:10px; color:#546e7a; margin-top:5px;">출처: 증권사 컨센서스</div></div>
+    <div class="card"><div class="card-title">시나리오별 목표주가</div>
+      <div class="scenario-box bear-bg"><strong style="color:#ef5350;">Bear: {fmt(opinion["target_bear"])}</strong></div>
+      <div class="scenario-box base-bg"><strong style="color:#ffc107;">Base: {fmt(opinion["target_base"])}</strong></div>
+      <div class="scenario-box bull-bg"><strong style="color:#66bb6a;">Bull: {fmt(opinion["target_bull"])}</strong></div>
+      <div style="margin-top:10px; font-size:12px;">Risk-Reward: {opinion["risk_reward"]}</div></div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card"><div class="card-title">Peer Comparison</div>{peer_bars}</div>
+    {supply_html if supply_html else '<div class="card"><div class="card-title">수급 데이터 없음</div></div>'}
+  </div>
+
+  <div class="grid-2">
+    <div class="card"><div class="card-title">카탈리스트 타임라인</div><div class="timeline" style="margin-top:10px;">{cat_items}</div></div>
+    <div class="card"><div class="card-title">실행 계획</div>
+      <div style="font-size:12px; margin-top:10px;">{md_table_to_html(sections.get("s20_action_plan",""))}</div></div>
+  </div>
+
+  <div class="grid-3">
+    <div class="card"><div class="card-title" style="color:#66bb6a;">TRUST</div>{trust_items}</div>
+    <div class="card"><div class="card-title" style="color:#ef5350;">WORRY</div>{worry_items}</div>
+    <div class="card"><div class="card-title" style="color:#ffc107;">WATCH</div>{watch_items}</div>
+  </div>
+
+  <div style="text-align:center; padding:20px; color:#546e7a; font-size:11px;">
+    본 자료는 투자 참고용이며, 투자 결정의 책임은 투자자 본인에게 있습니다.<br>
+    데이터 수집 시점: {meta["date"]} | DART/SEC + 한투API + 웹 검색 기반
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('priceChart');
+const ctx = canvas.getContext('2d');
+canvas.width = canvas.parentElement.clientWidth - 40;
+canvas.height = 220;
+const closes = {chart_js};
+const minP = {chart_min}, maxP = {chart_max};
+const w = canvas.width, h = canvas.height;
+const pad = {{top:15, bottom:25, left:10, right:10}};
+const chartW = w - pad.left - pad.right;
+const chartH = h - pad.top - pad.bottom;
+function yPos(price) {{ return pad.top + chartH - ((price - minP) / (maxP - minP)) * chartH; }}
+[{{price:{opinion["target_bull"]},color:'rgba(102,187,106,0.5)',label:'Bull {fmt(opinion["target_bull"])}'}},
+ {{price:{opinion["target_base"]},color:'rgba(255,193,7,0.5)',label:'Base {fmt(opinion["target_base"])}'}},
+ {{price:{opinion["target_bear"]},color:'rgba(239,83,80,0.5)',label:'Bear {fmt(opinion["target_bear"])}'}}].forEach(b => {{
+  ctx.strokeStyle=b.color; ctx.setLineDash([5,5]);
+  ctx.beginPath(); ctx.moveTo(pad.left,yPos(b.price)); ctx.lineTo(w-pad.right,yPos(b.price)); ctx.stroke();
+  ctx.setLineDash([]); ctx.fillStyle=b.color; ctx.font='10px sans-serif';
+  ctx.fillText(b.label, w-pad.right-90, yPos(b.price)-3);
+}});
+ctx.beginPath(); ctx.strokeStyle='#64b5f6'; ctx.lineWidth=2;
+closes.forEach((p,i) => {{
+  const x = pad.left + (i/(closes.length-1)) * chartW;
+  if(i===0) ctx.moveTo(x,yPos(p)); else ctx.lineTo(x,yPos(p));
+}}); ctx.stroke();
+const lastX=pad.left+chartW, lastY=yPos(closes[closes.length-1]);
+ctx.beginPath(); ctx.arc(lastX,lastY,5,0,Math.PI*2); ctx.fillStyle='#64b5f6'; ctx.fill();
+ctx.fillStyle='#fff'; ctx.font='bold 11px sans-serif';
+ctx.fillText('{fmt(price["current"])}', lastX-50, lastY-10);
+</script>
+</body></html>'''
+
+    html_path = os.path.join(output_dir, f'dashboard_{name}.html')
+    with open(html_path, 'w', encoding='utf-8') as f:
+        f.write(html)
+    print(f'[OK] 대시보드: {html_path} ({os.path.getsize(html_path)//1024} KB)')
+
+
+# ============================================
+# 메인
+# ============================================
+def main():
+    if len(sys.argv) < 2:
+        print("사용법: python scripts/generate_all.py <analysis.json>")
+        sys.exit(1)
+
+    json_path = sys.argv[1]
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    name = data["meta"]["stock_name"].replace(" ", "")
+    output_dir = os.path.join(project_root, "output", name)
+    os.makedirs(output_dir, exist_ok=True)
+
+    print(f'\n{"="*50}')
+    print(f'  리포트 생성: {data["meta"]["stock_name"]} ({data["meta"]["stock_code"]})')
+    print(f'{"="*50}\n')
+
+    # 일봉 데이터 로드 (있으면)
+    data_dir = os.path.join(project_root, "data", name)
+    kis_path = os.path.join(data_dir, "data_kis.json")
+    print(f"KIS 데이터 경로: {kis_path} (존재: {os.path.exists(kis_path)})")
+    if os.path.exists(kis_path):
+        with open(kis_path, 'r', encoding='utf-8') as f:
+            kis = json.load(f)
+        daily = kis.get("daily_prices", [])
+        if daily:
+            data["price"]["daily_prices"] = sorted(daily, key=lambda x: x.get("날짜", x.get("date", "")))
+
+    # ============================================
+    # 자동 품질 검증 (generate 전 필수 체크)
+    # ============================================
+    warnings = []
+    errors = []
+    sections = data.get("sections", {})
+    price = data.get("price", {})
+    opinion = data.get("opinion", {})
+    financials = data.get("financials", {})
+
+    # 1. EPS 검증: price.eps와 재무테이블 EPS가 대략 일치하는지
+    json_eps = price.get("eps", 0)
+    if json_eps and price.get("per", 0) > 0:
+        calc_eps = price.get("current", 0) / price.get("per", 1)
+        if abs(json_eps - calc_eps) / max(abs(calc_eps), 1) > 0.3:
+            warnings.append(f"EPS 불일치: JSON eps={json_eps}, 현재가/PER={calc_eps:.0f} (30%+ 차이)")
+
+    # 2. 사업보고서 인용 체크: sections에 "사업보고서" 또는 "10-K" 키워드가 있는지
+    all_sections_text = " ".join(str(v) for v in sections.values())
+    quote_keywords = ["사업보고서에 따르면", "사업보고서에서", "10-K에 따르면", "10-K에서", "DART 사업보고서", "공시에 따르면"]
+    quote_count = sum(1 for kw in quote_keywords if kw in all_sections_text)
+    if quote_count < 2:
+        warnings.append(f"사업보고서 인용 부족: {quote_count}건 (최소 3건 권장)")
+
+    # 3. "왜?" 분석 체크: YoY 변동 설명이 있는지
+    why_keywords = ["원인", "이유", "때문", "영향으로", "기인", "결과"]
+    why_count = sum(1 for kw in why_keywords if kw in all_sections_text)
+    if why_count < 5:
+        warnings.append(f'"왜?" 분석 부족: 원인/이유 언급 {why_count}건 (최소 5건 권장)')
+
+    # 4. Risk-Reward 검증
+    current = price.get("current", 0) or 1
+    bear = opinion.get("target_bear", 0)
+    bull = opinion.get("target_bull", 0)
+    if current > 0 and bear > 0 and bull > 0:
+        downside = (current - bear) / current
+        upside = (bull - current) / current
+        rr = upside / max(downside, 0.01)
+        if opinion.get("rating") == "BUY" and rr < 2.0:
+            warnings.append(f"BUY인데 R/R {rr:.1f}:1 (2.0 이상 권장). HOLD 재검토 필요?")
+
+    # 5. 현재가 0원 체크
+    if price.get("current", 0) == 0:
+        errors.append("현재가가 0원 -KIS 데이터 확인 필요")
+
+    # 6. 시가총액 교차검증 (KIS 데이터 vs JSON)
+    kis_path = os.path.join(data_dir, "data_kis.json")
+    if os.path.exists(kis_path):
+        try:
+            with open(kis_path, 'r', encoding='utf-8') as f:
+                kis_data = json.load(f)
+            kis_mktcap = kis_data.get("current_price", {}).get("시가총액", 0)
+            json_mktcap = price.get("market_cap_num", 0)
+            if kis_mktcap > 0 and json_mktcap > 0:
+                ratio = json_mktcap / kis_mktcap
+                if ratio < 0.5 or ratio > 2.0:
+                    errors.append(
+                        f"시총 불일치! JSON={json_mktcap:,}억 vs KIS={kis_mktcap:,}억 "
+                        f"(비율 {ratio:.2f}x). 10배 오류 가능성. 반드시 수정 필요!"
+                    )
+                elif abs(ratio - 1.0) > 0.1:
+                    warnings.append(
+                        f"시총 차이: JSON={json_mktcap:,}억 vs KIS={kis_mktcap:,}억 "
+                        f"(차이 {abs(ratio-1)*100:.0f}%)"
+                    )
+            # 현재가 교차검증
+            kis_price = kis_data.get("current_price", {}).get("현재가", 0)
+            json_price = price.get("current", 0)
+            if kis_price > 0 and json_price > 0:
+                price_diff = abs(kis_price - json_price) / kis_price
+                if price_diff > 0.05:
+                    warnings.append(
+                        f"현재가 차이: JSON={json_price:,}원 vs KIS={kis_price:,}원 "
+                        f"(차이 {price_diff*100:.1f}%)"
+                    )
+        except Exception as e:
+            # 조용히 묵살 금지 — 시총 교차검증이 이 블록 안에서 일어나므로
+            # 실패 시 최소한 경고는 남겨야 JYP/시총 10배 사고를 잡을 수 있다
+            warnings.append(
+                f"KIS 파일 읽기/파싱 실패 ({os.path.basename(kis_path)}): {type(e).__name__}: {e} "
+                f"— 시총/현재가 교차검증이 수행되지 않음. data_kis.json 재수집 권장"
+            )
+
+    # 7. 재무 테이블 수치 정합성 (매출, 영업이익 등이 합리적 범위인지)
+    fin_rows = financials.get("rows", [])
+    fin_headers = financials.get("headers", [])
+    for row in fin_rows:
+        if len(row) < 2:
+            continue
+        label = row[0]
+        for i, val in enumerate(row[1:], 1):
+            try:
+                # 숫자 파싱 (쉼표, 조, 억, x, % 제거)
+                v_str = str(val).replace(",","").replace("x","").replace("%","").replace("배","")
+                if "조" in str(val):
+                    v_num = float(v_str.replace("조","")) * 10000
+                elif "억" in str(val):
+                    v_num = float(v_str.replace("억",""))
+                else:
+                    v_num = float(v_str) if v_str.replace(".","").replace("-","").isdigit() else None
+                if v_num is None:
+                    continue
+                # 음수 영업이익률은 적자 → OK, 하지만 1000%+ 이익률은 오류
+                if "이익률" in label or "마진" in label:
+                    if abs(v_num) > 100:
+                        warnings.append(f"재무 테이블 이상: {label} = {val} (이익률 100%+ 는 오류 가능)")
+                # PER 10000+ 은 적자 기업 아니면 오류
+                if "PER" in label and v_num > 5000:
+                    warnings.append(f"재무 테이블: {label} = {val} (PER 5000+ 확인 필요)")
+            except:
+                continue
+
+    # 8. Bear/Base/Bull 순서 검증
+    bear = opinion.get("target_bear", 0)
+    base = opinion.get("target_base", 0)
+    bull = opinion.get("target_bull", 0)
+    if bear > 0 and base > 0 and bull > 0:
+        if not (bear < base < bull):
+            errors.append(f"Bear/Base/Bull 순서 오류: Bear={bear}, Base={base}, Bull={bull}. Bear < Base < Bull 이어야 함")
+        if bear > current:
+            warnings.append(f"Bear({bear:,}) > 현재가({current:,}). Bear는 하방 시나리오인데 현재가보다 높음?")
+
+    # 9. 배당수익률 검증
+    div_yield = price.get("dividend_yield", "0%")
+    try:
+        dy = float(str(div_yield).replace("%",""))
+        if dy > 20:
+            warnings.append(f"배당수익률 {div_yield}는 비정상적으로 높음. 확인 필요")
+    except:
+        pass
+
+    # 10. Peer 테이블 정확성 (JYP v1 사고 재발 방지)
+    #     _peer_snapshot.json이 있으면 analysis.peers의 시총/PER/PBR을 그 값과 교차 대조
+    peer_path = os.path.join(data_dir, "_peer_snapshot.json")
+    if os.path.exists(peer_path):
+        try:
+            with open(peer_path, 'r', encoding='utf-8') as f:
+                peer_snap = json.load(f)
+            peers_json = data.get("peers", [])
+            # "본 종목"(하이라이트) 제외하고 비교
+            for p in peers_json:
+                if p.get("highlight"):
+                    continue
+                pname = p.get("name", "")
+                snap = None
+                for snap_name, snap_data in peer_snap.items():
+                    if snap_name.lower().split()[0] in pname.lower() or pname.lower().split()[0] in snap_name.lower():
+                        snap = snap_data
+                        break
+                if not snap:
+                    warnings.append(f"Peer '{pname}'이 _peer_snapshot.json에 없음. 실시간 조회 필요")
+                    continue
+                # 시총 비교 (억 단위)
+                json_mc_str = str(p.get("market_cap", "")).replace("조", "").replace("억", "").replace(",", "").strip()
+                try:
+                    json_mc = float(json_mc_str)
+                    if "조" in str(p.get("market_cap", "")):
+                        json_mc *= 10000  # 조→억
+                    snap_mc = snap.get("market_cap_uk", 0)
+                    if snap_mc > 0:
+                        ratio = json_mc / snap_mc
+                        if ratio < 0.7 or ratio > 1.3:
+                            errors.append(
+                                f"Peer '{pname}' 시총 불일치! JSON={json_mc:,.0f}억 vs KIS snapshot={snap_mc:,}억 "
+                                f"(차이 {abs(ratio-1)*100:.0f}%). 추정치 사용 의심 — JYP v1 재발 경고"
+                            )
+                except (ValueError, TypeError):
+                    pass
+                # PER 비교
+                json_per_str = str(p.get("per", "")).replace("x", "").replace("X", "").strip()
+                if "적자" in json_per_str:
+                    if snap.get("per", 0) >= 0:
+                        warnings.append(f"Peer '{pname}' JSON은 '적자'인데 KIS PER={snap['per']} (양수). 확인 필요")
+                else:
+                    try:
+                        json_per = float(json_per_str.split()[-1] if json_per_str else 0)
+                        snap_per = snap.get("per", 0)
+                        if snap_per != 0 and abs(json_per - snap_per) / abs(snap_per) > 0.1:
+                            warnings.append(
+                                f"Peer '{pname}' PER 불일치: JSON={json_per} vs KIS={snap_per} "
+                                f"(차이 {abs(json_per - snap_per)/abs(snap_per)*100:.0f}%)"
+                            )
+                    except (ValueError, TypeError):
+                        pass
+        except Exception as e:
+            warnings.append(f"_peer_snapshot.json 파싱 실패: {type(e).__name__}: {e} - Peer 정확성 검증 건너뜀")
+    else:
+        warnings.append("_peer_snapshot.json 없음. STEP 2.3(Peer KIS 실시간 조회)을 건너뛴 것으로 의심 - JYP v1 재발 위험")
+
+    # 11. 역사 밴드 정확성 (연말 주가 추정 사고 재발 방지)
+    band_path = os.path.join(data_dir, "_per_band.json")
+    if os.path.exists(band_path):
+        try:
+            with open(band_path, 'r', encoding='utf-8') as f:
+                band = json.load(f)
+            # current_per는 KIS 원본과 일치해야 함
+            band_cur_per = band.get("current_per", 0)
+            json_per = price.get("per", 0)
+            if band_cur_per > 0 and json_per > 0:
+                if abs(band_cur_per - json_per) / json_per > 0.05:
+                    warnings.append(
+                        f"_per_band.json current_per={band_cur_per} vs JSON price.per={json_per} "
+                        f"불일치. 둘 중 하나가 stale"
+                    )
+            # PER 시계열이 최소 3개는 있어야 밴드로서 의미 있음
+            per_n = len(band.get("per_series", []))
+            if per_n < 3:
+                warnings.append(f"_per_band.json PER 시계열 {per_n}개 - 최소 3년은 필요. FDR 조회 실패 의심")
+        except Exception as e:
+            warnings.append(f"_per_band.json 파싱 실패: {type(e).__name__}: {e}")
+    else:
+        warnings.append("_per_band.json 없음. STEP 1.7(FDR 5년 연말 종가)을 건너뛴 것으로 의심 - 역사 밴드 추정 위험")
+
+    # 결과 출력
+    if errors:
+        print("[ERROR] 심각한 오류 발견:")
+        for e in errors:
+            print(f"   [ERROR] {e}")
+        print("   → 리포트 생성을 중단합니다. 데이터를 확인하세요.")
+        sys.exit(1)
+
+    if warnings:
+        print(f"[WARN]  품질 경고 {len(warnings)}건:")
+        for w in warnings:
+            print(f"   [WARN]  {w}")
+        print("   → 리포트는 생성하지만, 위 항목을 개선하면 품질이 올라갑니다.\n")
+    else:
+        print("[OK] 품질 검증 통과\n")
+
+    # v3: 단일 상세 PDF (요약/대시보드 폐기)
+    generate_detailed_report(data, output_dir)
+
+    print(f'\n{"="*50}')
+    print(f'  완료! output/{name}/report_{name}_상세.pdf')
+    if warnings:
+        print(f'  [WARN]  품질 경고 {len(warnings)}건 -위 경고 확인 권장')
+    print(f'{"="*50}\n')
+
+
+if __name__ == "__main__":
+    main()
