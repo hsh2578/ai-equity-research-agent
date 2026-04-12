@@ -49,57 +49,145 @@ def extract_financials(facts: dict) -> dict:
     """핵심 재무지표 추출"""
     us_gaap = facts.get("facts", {}).get("us-gaap", {})
 
-    # 추출할 지표 매핑
+    # 추출할 지표 매핑 (v2: 40+ 필드로 확장)
     metrics = {
+        # === 손익계산서 ===
         "Revenue (매출)": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet", "RevenueFromContractWithCustomerIncludingAssessedTax"],
+        "COGS (매출원가)": ["CostOfGoodsAndServicesSold", "CostOfRevenue", "CostOfGoodsSold"],
+        "Gross Profit (매출총이익)": ["GrossProfit"],
+        "Operating Income (영업이익)": ["OperatingIncomeLoss"],
+        "SGA (판관비)": ["SellingGeneralAndAdministrativeExpense"],
+        "R&D Expense (연구개발비)": ["ResearchAndDevelopmentExpense"],
+        "Interest Expense (이자비용)": ["InterestExpense", "InterestExpenseDebt"],
+        "Income Tax (법인세)": ["IncomeTaxExpenseBenefit"],
+        "Pretax Income (세전이익)": ["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest", "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"],
+        "Net Income (순이익)": ["NetIncomeLoss"],
+        "EPS (주당순이익)": ["EarningsPerShareDiluted", "EarningsPerShareBasic"],
+        "DPS (주당배당금)": ["CommonStockDividendsPerShareDeclared", "CommonStockDividendsPerShareCashPaid"],
+        # === 재무상태표 ===
+        "Total Assets (총자산)": ["Assets"],
+        "Current Assets (유동자산)": ["AssetsCurrent"],
+        "Cash (현금)": ["CashAndCashEquivalentsAtCarryingValue", "CashCashEquivalentsAndShortTermInvestments"],
+        "Short-term Investments (단기투자)": ["ShortTermInvestments", "MarketableSecuritiesCurrent"],
+        "Receivables (매출채권)": ["AccountsReceivableNetCurrent", "AccountsReceivableNet"],
+        "Inventory (재고자산)": ["InventoryNet", "Inventories"],
+        "Non-current Assets (비유동자산)": ["AssetsNoncurrent"],
+        "PP&E (유형자산)": ["PropertyPlantAndEquipmentNet"],
+        "Goodwill (영업권)": ["Goodwill"],
+        "Intangibles (무형자산)": ["IntangibleAssetsNetExcludingGoodwill"],
+        "Total Liabilities (총부채)": ["Liabilities"],
+        "Current Liabilities (유동부채)": ["LiabilitiesCurrent"],
+        "Payables (매입채무)": ["AccountsPayableCurrent", "AccountsPayableAndAccruedLiabilitiesCurrent"],
+        "Short-term Debt (단기차입금)": ["ShortTermBorrowings", "CommercialPaper"],
+        "Non-current Liabilities (비유동부채)": ["LiabilitiesNoncurrent"],
+        "Long-term Debt (장기차입금)": ["LongTermDebt", "LongTermDebtNoncurrent"],
+        "Total Debt (총차입금)": ["DebtCurrent", "LongTermDebtAndCapitalLeaseObligations"],
+        "Stockholders Equity (자기자본)": ["StockholdersEquity"],
+        "Retained Earnings (이익잉여금)": ["RetainedEarningsAccumulatedDeficit"],
+        "Shares Outstanding (발행주식수)": ["CommonStockSharesOutstanding", "WeightedAverageNumberOfShareOutstandingBasicAndDiluted", "WeightedAverageNumberOfDilutedSharesOutstanding"],
+        # === 현금흐름표 ===
+        "Operating Cash Flow (영업현금흐름)": ["NetCashProvidedByUsedInOperatingActivities"],
+        "D&A (감가상각비)": ["DepreciationDepletionAndAmortization", "DepreciationAndAmortization", "Depreciation"],
+        "CapEx (설비투자)": ["PaymentsToAcquirePropertyPlantAndEquipment"],
+        "Investing Cash Flow (투자현금흐름)": ["NetCashProvidedByUsedInInvestingActivities"],
+        "Financing Cash Flow (재무현금흐름)": ["NetCashProvidedByUsedInFinancingActivities"],
+        "Dividends Paid (배당금지급)": ["PaymentsOfDividends", "PaymentsOfDividendsCommonStock"],
+        "Share Repurchase (자사주매입)": ["PaymentsForRepurchaseOfCommonStock"],
+        "Stock Comp (주식보상비)": ["ShareBasedCompensation"],
+    }
+
+    result = {}
+
+    def _extract_annual(key_name):
+        """단일 XBRL 태그에서 연간 데이터 추출. {year: {period, value}} 반환."""
+        if key_name not in us_gaap:
+            return {}
+        units = us_gaap[key_name].get("units", {})
+        for unit_type in ["USD", "shares", "USD/shares"]:
+            if unit_type in units:
+                entries = units[unit_type]
+                annual = [
+                    e for e in entries
+                    if e.get("form") in ("10-K", "10-K/A")
+                    and e.get("fp") == "FY"
+                ]
+                annual.sort(key=lambda x: x.get("filed", ""), reverse=True)
+                seen = {}
+                for e in annual:
+                    year = e["end"][:4]
+                    if year not in seen:
+                        seen[year] = {"period": e["end"], "value": e["val"]}
+                return seen
+        return {}
+
+    for label, possible_keys in metrics.items():
+        # 모든 후보 태그에서 데이터를 병합 (첫 태그 우선, 빈 연도만 후순위로 채움)
+        merged = {}
+        for key in possible_keys:
+            year_data = _extract_annual(key)
+            for year, entry in year_data.items():
+                if year not in merged:
+                    merged[year] = entry
+
+        if merged:
+            sorted_years = sorted(merged.keys())
+            recent = [merged[y] for y in sorted_years[-5:]]
+            result[label] = recent
+
+    return result
+
+
+def extract_quarterly_financials(facts: dict, num_quarters: int = 8) -> dict:
+    """SEC XBRL에서 분기(10-Q) 재무 데이터 추출.
+
+    Returns: { "Revenue (매출)": [{"period": "2024-09-30", "value": ..., "fp": "Q3"}, ...], ... }
+    최근 num_quarters 분기만 반환.
+    """
+    us_gaap = facts.get("facts", {}).get("us-gaap", {})
+
+    # 연간과 동일한 지표를 분기로 추출 (주요 항목만)
+    metrics = {
+        "Revenue (매출)": ["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax",
+                          "SalesRevenueNet", "RevenueFromContractWithCustomerIncludingAssessedTax"],
+        "COGS (매출원가)": ["CostOfGoodsAndServicesSold", "CostOfRevenue"],
+        "Gross Profit (매출총이익)": ["GrossProfit"],
         "Operating Income (영업이익)": ["OperatingIncomeLoss"],
         "Net Income (순이익)": ["NetIncomeLoss"],
         "EPS (주당순이익)": ["EarningsPerShareDiluted", "EarningsPerShareBasic"],
-        "Total Assets (총자산)": ["Assets"],
-        "Total Liabilities (총부채)": ["Liabilities"],
-        "Stockholders Equity (자기자본)": ["StockholdersEquity"],
         "Operating Cash Flow (영업현금흐름)": ["NetCashProvidedByUsedInOperatingActivities"],
-        "Free Cash Flow 관련 - CapEx": ["PaymentsToAcquirePropertyPlantAndEquipment"],
-        "R&D Expense (연구개발비)": ["ResearchAndDevelopmentExpense"],
-        "Shares Outstanding (발행주식수)": ["CommonStockSharesOutstanding"],
+        "CapEx (설비투자)": ["PaymentsToAcquirePropertyPlantAndEquipment"],
     }
 
     result = {}
 
     for label, possible_keys in metrics.items():
-        for key in possible_keys:
-            if key in us_gaap:
-                units = us_gaap[key].get("units", {})
-                # USD 또는 shares 단위 찾기
-                for unit_type in ["USD", "shares", "USD/shares"]:
-                    if unit_type in units:
-                        entries = units[unit_type]
-                        # 10-K (연간) 데이터만 필터 + 최근 5년
-                        annual = [
-                            e for e in entries
-                            if e.get("form") in ("10-K", "10-K/A")
-                            and e.get("fp") == "FY"
-                        ]
-                        # 수정공시(amendment) 우선: 최신 filed 기준 정렬 후 중복 제거
-                        annual.sort(key=lambda x: x.get("filed", ""), reverse=True)
-                        seen = set()
-                        unique = []
-                        for e in annual:
-                            year = e["end"][:4]
-                            if year not in seen:
-                                seen.add(year)
-                                unique.append(e)
+        merged = {}  # key: "YYYY-QN" -> entry
+        for key_name in possible_keys:
+            if key_name not in us_gaap:
+                continue
+            units = us_gaap[key_name].get("units", {})
+            for unit_type in ["USD", "shares", "USD/shares"]:
+                if unit_type in units:
+                    entries = units[unit_type]
+                    quarterly = [
+                        e for e in entries
+                        if e.get("form") in ("10-Q", "10-Q/A")
+                        and e.get("fp") in ("Q1", "Q2", "Q3")
+                    ]
+                    quarterly.sort(key=lambda x: x.get("filed", ""), reverse=True)
+                    for e in quarterly:
+                        qkey = f"{e['end'][:4]}-{e['fp']}"
+                        if qkey not in merged:
+                            merged[qkey] = {
+                                "period": e["end"],
+                                "value": e["val"],
+                                "fp": e["fp"],
+                            }
+                    break  # unit_type found
 
-                        unique.sort(key=lambda x: x["end"])
-                        # 최근 5개년
-                        recent = unique[-5:]
-                        if recent:
-                            result[label] = [
-                                {"period": e["end"], "value": e["val"]}
-                                for e in recent
-                            ]
-                        break
-                break
+        if merged:
+            sorted_entries = sorted(merged.values(), key=lambda x: x["period"])
+            result[label] = sorted_entries[-num_quarters:]
 
     return result
 

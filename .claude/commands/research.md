@@ -139,24 +139,39 @@ from kis_api import *
 
 ## STEP 1.5: 재무 데이터 자동 요약
 
+**KR 종목:**
 ```bash
 python scripts/financial_summary.py {종목명} {종목코드}
 # 예: python scripts/financial_summary.py 기아 000270
 ```
 
-→ `data/{종목명}/financial_summary.json` 생성.
+**US 종목:**
+```bash
+python scripts/financial_summary_us.py {TICKER} [EXCD]
+# 예: python scripts/financial_summary_us.py TSLA
+# 예: python scripts/financial_summary_us.py JPM NYS
+# EXCD: NAS(나스닥, 기본), NYS(뉴욕), AMS(아멕스) -- 주요 NYSE 종목은 자동 감지
+```
 
-**이 파일의 수치를 analysis.json에 그대로 사용한다.** KIS 재무 API는 공식 데이터이며 EPS/BPS/ROE/부채비율을 이미 계산해서 제공한다.
+→ `data/{종목명 또는 TICKER}/financial_summary.json` 생성.
 
-제공 데이터 (KIS 7개 엔드포인트 통합):
+**이 파일의 수치를 analysis.json에 그대로 사용한다.** 공식 데이터이며 EPS/BPS/ROE/부채비율을 이미 계산해서 제공한다.
+
+**KR 제공 데이터 (KIS 7개 엔드포인트 통합):**
 - **KIS 시세**: 시총, PER, PBR, EPS, BPS, 52주 고저, 배당수익률, Forward PER(12M), 업종 PER, EPS 교차검증
 - **손익계산서** (최대 22년): 매출, 매출원가, 매출총이익, 영업이익, 경상이익, 당기순이익 + 원가율/OPM/NPM 자동 계산
 - **재무상태표** (최대 22년): 총자산/유동/비유동, 총부채, 자본총계, 이익잉여금
 - **재무비율** (계산 불필요): ROE, ROA, 부채비율, 유동비율, 차입금의존도, 매출/영업이익/순이익/자기자본/총자산 증가율, EBITDA, EV/EBITDA, 배당성향, EVA
 - **이상치 경고**: 매출 30%+ / 영업이익 50%+ 급변, OPM 음수, 부채비율 300%+ 등
 
+**US 제공 데이터 (SEC EDGAR XBRL + KIS 해외주식 + yfinance):**
+- **SEC XBRL**: 매출/원가/매출총이익/영업이익/순이익/EPS + 총자산/유동자산/현금/재고/부채/자본 + OCF/CapEx/FCF (5년 연간)
+- **KIS 해외주식**: 현재가, 52주 고저 (PER/EPS가 0이면 yfinance fallback)
+- **yfinance**: Forward PE/EPS, PEG, EV/EBITDA, 애널리스트 타겟/컨센서스, Beta, 공매도비율, 내부자/기관 보유비율
+- **자동 파생**: OPM/NPM/ROE/ROA/부채비율/유동비율/FCF/Net Debt/Effective Tax Rate + YoY 성장률
+
 **Q4 일회성 비용 체크 (한국 기업 특화):**
-- 연간 영업이익/순이익에서 Q4 단독 비중 50%+ 또는 절댓값 집중 → 일회성 여부 조사 필수
+- 연간 영업이익/순이익에서 Q4 단독 비중 50%+ 또는 절댓값 집중 -> 일회성 여부 조사 필수
 - 전형적: 유형자산 손상차손, 재고평가손실, 퇴직급여충당금, 특별상여, 대손충당금
 - 일회성이면 s08에 **정상화 이익(Normalized Earnings)** 별도 계산하여 병기
 

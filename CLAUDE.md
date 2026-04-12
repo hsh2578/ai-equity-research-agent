@@ -125,7 +125,8 @@ out_path = f'_tmp_r{idx}_{short}.txt'
 | `dart_api.py` | DART API 래퍼. `get_corp_code()`, `get_consolidated_statements()`, `get_all_reports()` |
 | `kis_api.py` | 한투 API 래퍼. 18req/sec 제한. `get_current_price()`, `get_investor_trend()`, `get_daily_price()` |
 | `sec_edgar.py` | SEC EDGAR 래퍼. US 종목 재무제표 + 10-K/10-Q |
-| `financial_summary.py` | DART/KIS 원본 → 손익+재무상태+현금흐름+비율 자동 정리. 이상치 경고 |
+| `financial_summary.py` | KR: DART/KIS 원본 -> 손익+재무상태+현금흐름+비율 자동 정리. 이상치 경고 |
+| `financial_summary_us.py` | US: SEC EDGAR XBRL + KIS 해외주식 + yfinance -> 동일 포맷 재무 요약. Forward PE/EPS/타겟 포함 |
 | `generate_all.py` | analysis.json → **단일 상세 PDF** (Navy/Gold v3, HTML→PDF). 마크다운 파싱 + 이모지 strip + 자동 품질 검증 9개 |
 | `report_extractor.py` | 사업보고서 → 핵심 인용문 + 전년대비 변화점 자동 추출 |
 | `dcf_calculator.py` | FCF 기반 DCF 3시나리오 + 민감도 테이블 |
