@@ -587,7 +587,7 @@ _SUMMARY_V2_CSS = r"""
     color: #b8922e;
   }
   .cover .brand-bar .left { font-weight: 700; }
-  .cover .cover-body { margin-top: 48mm; }
+  .cover .cover-body { margin-top: 28mm; }
   .cover .cap-gold {
     color: #b8922e;
     font-size: 9pt;
@@ -624,10 +624,11 @@ _SUMMARY_V2_CSS = r"""
     position: absolute;
     left: 22mm;
     right: 22mm;
-    bottom: 42mm;
+    bottom: 29mm;
     border: 1px solid rgba(184,146,46,0.7);
-    padding: 6mm 7mm;
-    background: rgba(0,0,0,0.18);
+    padding: 5mm 6mm;
+    background: rgba(0,0,0,0.22);
+    min-height: 32mm;
   }
   .cover .pick-label {
     color: #b8922e;
@@ -677,6 +678,91 @@ _SUMMARY_V2_CSS = r"""
     padding-top: 4mm;
     border-top: 1px solid rgba(184,146,46,0.3);
   }
+
+  /* ========== Cover Dashboard (3열 데이터 그리드, 융합 스타일) ========== */
+  .cover .dashboard {
+    position: absolute;
+    left: 22mm;
+    right: 22mm;
+    bottom: 78mm;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6mm;
+    background: rgba(0,0,0,0.22);
+    border-top: 0.8px solid rgba(184,146,46,0.7);
+    border-bottom: 0.8px solid rgba(184,146,46,0.7);
+    padding: 4mm 5mm;
+  }
+  .cover .dash-block {
+    padding: 0;
+    font-size: 7.8pt;
+    line-height: 1.55;
+  }
+  .cover .dash-title {
+    color: #b8922e;
+    font-size: 7pt;
+    letter-spacing: 2.5px;
+    text-transform: uppercase;
+    font-weight: 700;
+    margin-bottom: 2.5mm;
+    padding-bottom: 1mm;
+    border-bottom: 0.5px solid rgba(184,146,46,0.5);
+  }
+  .cover .dash-row {
+    display: flex;
+    justify-content: space-between;
+    color: #e0e6f0;
+    font-variant-numeric: tabular-nums;
+    padding: 0.3mm 0;
+  }
+  .cover .dash-row .lbl { color: #8593aa; font-size: 7.3pt; }
+  .cover .dash-row .val { color: #ffffff; font-weight: 600; font-size: 7.8pt; }
+  .cover .dash-row.pos .val { color: #86c7a5; }
+  .cover .dash-row.neg .val { color: #e2a5a5; }
+
+  /* pick-box 내 3-Target 세로 스펙트럼 */
+  .cover .target-spectrum {
+    display: grid;
+    grid-template-columns: 1fr 1.2fr 1fr;
+    gap: 0;
+    margin-top: 2mm;
+  }
+  .cover .target-cell {
+    padding: 1.5mm 3mm;
+    border-right: 0.5px solid rgba(184,146,46,0.3);
+    text-align: center;
+  }
+  .cover .target-cell:last-child { border-right: none; }
+  .cover .target-cell .t-lbl {
+    font-size: 7pt;
+    letter-spacing: 2px;
+    color: #8593aa;
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+  .cover .target-cell .t-val {
+    font-family: Georgia, serif;
+    font-size: 14pt;
+    font-weight: 400;
+    color: #e0e6f0;
+    margin-top: 0.5mm;
+    font-variant-numeric: tabular-nums;
+  }
+  .cover .target-cell.base .t-val {
+    font-size: 20pt;
+    color: #ffffff;
+    font-weight: 500;
+  }
+  .cover .target-cell.base .t-lbl { color: #b8922e; }
+  .cover .target-cell.bear .t-val { color: #e2a5a5; }
+  .cover .target-cell.bull .t-val { color: #86c7a5; }
+  .cover .target-cell .t-delta {
+    font-size: 7.5pt;
+    color: #8593aa;
+    margin-top: 0.3mm;
+    font-variant-numeric: tabular-nums;
+  }
+  .cover .target-cell.base .t-delta { color: #d0d6e0; font-weight: 600; }
 
   /* ========== Verdict Card ========== */
   .verdict-card {
@@ -1265,16 +1351,18 @@ def _generate_summary_v2(data, output_dir):
     final_conclusion = _sv2_first_para(sections.get("s13_thesis", "") or sections.get("s01_opinion", ""), 320)
 
     # ---- Tagline (cover subtitle, Georgia italic) ----
-    # Priority: meta.subtitle (manual) > derived from industry + rating
-    tagline = meta.get("subtitle")
+    # Priority: meta.tagline (LLM 생성 한국어 카피) > meta.subtitle (legacy) > derived
+    tagline = meta.get("tagline") or meta.get("subtitle")
     if not tagline:
         industry = meta.get('industry', '')
+        stock_name = meta.get('stock_name', '')
+        # 한국어 개성 카피 (위닝펀드 스타일 참조)
         if rating == "BUY":
-            tagline = f"{industry}의 비대칭 기회"
+            tagline = f"{industry} -- 시장이 아직 보지 못한 비대칭"
         elif rating == "SELL":
-            tagline = f"{industry}에서 가격이 내러티브를 앞서가다"
+            tagline = f"{industry} -- 내러티브가 가격을 앞서간 자리"
         else:
-            tagline = f"{industry} · Balance of risk tilts to the downside"
+            tagline = f"{industry} -- 기대와 리스크 사이, 균형의 순간"
     tagline = _strip_emoji(tagline)
 
     # ---- Financials table subset (top 6 rows) ----
@@ -1354,10 +1442,145 @@ def _generate_summary_v2(data, output_dir):
     # ==========================================================================
     cover_rating_color = {"BUY": "#2a6b4a", "HOLD": "#b8922e", "SELL": "#8b2e2e"}.get(rating, "#b8922e")
 
+    # ----- Cover Dashboard 계산: 1M/6M/12M 수익률 (daily_prices 이용) -----
+    def _calc_return(prices, trading_days):
+        if not prices or len(prices) < 2:
+            return None
+        try:
+            cur = float(prices[0].get('close', 0))
+            idx = min(trading_days, len(prices) - 1)
+            past = float(prices[idx].get('close', 0))
+            if past == 0:
+                return None
+            return (cur - past) / past * 100
+        except (TypeError, ValueError):
+            return None
+
+    daily = price.get('daily_prices', []) or []
+    r_1m = _calc_return(daily, 21)   # ~1개월 거래일
+    r_6m = _calc_return(daily, 126)  # ~6개월
+    r_12m = _calc_return(daily, 252) # ~12개월
+
+    def _ret_cell(v):
+        if v is None:
+            return '<span class="val">—</span>'
+        cls = "pos" if v > 0 else "neg"
+        return f'<span class="val" style="color:{"#86c7a5" if v>0 else "#e2a5a5"};">{v:+.1f}%</span>'
+
+    # ----- Stock Data block -----
+    def _price_fmt(v):
+        if v is None or v == "":
+            return "—"
+        try:
+            n = float(v)
+            if is_kr:
+                return f"{int(n):,}원"
+            return f"${n:,.2f}"
+        except (TypeError, ValueError):
+            return str(v)
+
+    # 52주 고/저 통합 포맷
+    hi52 = price.get("high_52w")
+    lo52 = price.get("low_52w")
+    if hi52 and lo52:
+        if is_kr:
+            range_52w = f"{int(lo52):,} – {int(hi52):,}"
+        else:
+            range_52w = f"${lo52:,.2f} – ${hi52:,.2f}"
+    else:
+        range_52w = None
+
+    stock_data_rows = [
+        ("시가총액", price.get("market_cap")),
+        ("52주 고/저", range_52w),  # 통합 1행
+        ("PER (TTM)", f'{price.get("per")}x' if price.get("per") else None),
+        ("PBR", f'{price.get("pbr")}x' if price.get("pbr") else None),
+        ("EPS", _price_fmt(price.get("eps")) if price.get("eps") else None),
+        ("BPS", _price_fmt(price.get("bps")) if price.get("bps") else None),
+        ("배당수익률", price.get("dividend_yield")),
+    ]
+
+    # 빈 값 행 자동 스킵
+    stock_data_html = ''
+    for lbl, val in stock_data_rows:
+        if val is None or val == "" or val == "—":
+            continue
+        stock_data_html += f'<div class="dash-row"><span class="lbl">{html_lib.escape(str(lbl))}</span><span class="val">{html_lib.escape(str(val))}</span></div>'
+
+    # ----- 컨센서스 요약 block (재무 2년치 발췌 -- 실적/추정 명확화) -----
+    cons_rows_html = ''
+    cons_subtitle = ''
+    if fin_headers and fin_rows:
+        # header에서 확정 마지막 idx + Forward 첫 idx 찾기
+        last_actual = len(fin_headers) - 1
+        fwd_idx = None
+        for i in range(1, len(fin_headers)):
+            h = str(fin_headers[i]).upper()
+            if 'E' in h or 'F' in h:
+                fwd_idx = i
+                if last_actual == len(fin_headers) - 1:
+                    last_actual = i - 1
+                break
+        if fwd_idx is None:
+            fwd_idx = last_actual
+
+        y_act = str(fin_headers[last_actual]) if last_actual < len(fin_headers) else ""
+        y_fwd = str(fin_headers[fwd_idx]) if fwd_idx < len(fin_headers) else ""
+
+        # 헤더 단위 정보 추출 (예: "매출(조)" → "조")
+        rev_header = fin_headers[0] if fin_headers else ""
+        unit_match = ""
+        if "조" in str(rev_header): unit_match = "조원"
+        elif "억" in str(rev_header): unit_match = "억원"
+        elif "$" in str(rev_header) or "B" in str(rev_header).upper(): unit_match = "$B"
+
+        # 서브타이틀: "2025 실적 / 2026E 추정"
+        cons_subtitle = f'<div style="font-size:6.5pt; color:#8593aa; letter-spacing:1.5px; margin-bottom:1.5mm; text-align:center;">{html_lib.escape(y_act)} 실적 &nbsp;/&nbsp; {html_lib.escape(y_fwd)} 추정 &nbsp;<span style="color:#b8922e;">({unit_match})</span></div>' if unit_match else f'<div style="font-size:6.5pt; color:#8593aa; letter-spacing:1.5px; margin-bottom:1.5mm; text-align:center;">{html_lib.escape(y_act)} / {html_lib.escape(y_fwd)}</div>'
+
+        # 핵심 5개 행 (주주(최대/외인) 는 데이터 없어 제외)
+        keywords = [("매출", "매출"), ("영업이익", "영업이익"), ("순이익", "순이익"), ("EPS", "EPS"), ("OPM", "OPM")]
+        for lbl, kw in keywords:
+            for row in fin_rows:
+                if row and kw in str(row[0]):
+                    v_act = str(row[last_actual]) if last_actual < len(row) else None
+                    v_fwd = str(row[fwd_idx]) if fwd_idx < len(row) else None
+                    if not v_act or v_act == "—":
+                        continue
+                    cons_rows_html += f'<div class="dash-row"><span class="lbl">{html_lib.escape(lbl)}</span><span class="val" style="font-size:7pt;">{html_lib.escape(v_act)} → {html_lib.escape(v_fwd)}</span></div>'
+                    break
+
+    if not cons_rows_html:
+        cons_rows_html = '<div class="dash-row"><span class="lbl">재무 데이터 없음</span><span class="val">—</span></div>'
+
+    cons_rows_html = cons_subtitle + cons_rows_html
+
+    # ----- 주가 수익률 & Forward 밸류에이션 block -----
+    # 중복 방지: 52주 고/저는 Stock Data에만
+    # 빈 행 자동 스킵
+    ret_items = []
+    if r_1m is not None: ret_items.append(("1개월", _ret_cell(r_1m)))
+    if r_6m is not None: ret_items.append(("6개월", _ret_cell(r_6m)))
+    if r_12m is not None: ret_items.append(("12개월", _ret_cell(r_12m)))
+    if price.get("change_pct") is not None:
+        cp = price.get("change_pct", 0)
+        cls_c = "pos" if cp > 0 else ("neg" if cp < 0 else "")
+        color_c = "#86c7a5" if cp > 0 else ("#e2a5a5" if cp < 0 else "#ffffff")
+        ret_items.append(("일일 변동", f'<span class="val" style="color:{color_c};">{cp:+.2f}%</span>'))
+    if price.get("per_forward_12m"):
+        ret_items.append(("Forward PER", f'<span class="val">{price.get("per_forward_12m")}x</span>'))
+    if price.get("sector_per"):
+        ret_items.append(("섹터 PER", f'<span class="val">{price.get("sector_per")}x</span>'))
+
+    returns_html = ''
+    for lbl, cell in ret_items:
+        returns_html += f'<div class="dash-row"><span class="lbl">{html_lib.escape(lbl)}</span>{cell}</div>'
+    if not returns_html:
+        returns_html = '<div class="dash-row"><span class="lbl">데이터 없음</span><span class="val">—</span></div>'
+
     page1 = f"""
 <section class="page cover">
   <div class="brand-bar">
-    <div class="left">Equity Research · Institutional Grade</div>
+    <div class="left">AI Equity Research · {html_lib.escape(meta.get("country","KR"))} · {html_lib.escape(meta.get("market",""))}</div>
     <div class="right">{html_lib.escape(meta.get("date",""))}</div>
   </div>
   <div class="cover-body">
@@ -1366,16 +1589,46 @@ def _generate_summary_v2(data, output_dir):
     <div class="stock-meta">{html_lib.escape(meta.get("stock_code",""))} &nbsp;·&nbsp; {html_lib.escape(meta.get("industry",""))}</div>
     <div class="tagline">{html_lib.escape(tagline)}</div>
   </div>
+  <div class="dashboard">
+    <div class="dash-block">
+      <div class="dash-title">핵심 지표</div>
+      {stock_data_html}
+    </div>
+    <div class="dash-block">
+      <div class="dash-title">컨센서스 요약</div>
+      {cons_rows_html}
+    </div>
+    <div class="dash-block">
+      <div class="dash-title">주가 수익률 · 밸류</div>
+      {returns_html}
+    </div>
+  </div>
   <div class="pick-box">
-    <div class="pick-label">Our Call</div>
-    <div class="pick-row">
-      <div>
+    <div class="pick-label">투자의견 · 3-시나리오 목표주가 스펙트럼</div>
+    <div class="pick-row" style="align-items:flex-start;">
+      <div style="padding-top:2mm;">
         <span class="pick-badge" style="background:#b8922e;">{html_lib.escape(rating)}</span>
+        <div style="margin-top:3mm; font-size:7.5pt; color:#b8c3d4; letter-spacing:1.5px;">
+          Current &nbsp; <b style="color:#ffffff;">{fmt_money(cur_price)}</b><br>
+          R/R &nbsp;&nbsp; <b style="color:#b8922e;">{html_lib.escape(str(rr))}</b>
+        </div>
       </div>
-      <div class="pick-metrics">
-        <div>Target (Base) &nbsp; <span class="big">{fmt_money(opinion["target_base"])}</span></div>
-        <div>Current &nbsp; {fmt_money(cur_price)} &nbsp;·&nbsp; Upside {up_base:+.1f}%</div>
-        <div>Risk · Reward &nbsp; {html_lib.escape(str(rr))}</div>
+      <div class="target-spectrum" style="flex:1; margin-left:6mm;">
+        <div class="target-cell bear">
+          <div class="t-lbl">Bear</div>
+          <div class="t-val">{fmt_money(opinion.get("target_bear","—"))}</div>
+          <div class="t-delta">{down_bear:+.1f}%</div>
+        </div>
+        <div class="target-cell base">
+          <div class="t-lbl">Base</div>
+          <div class="t-val">{fmt_money(opinion["target_base"])}</div>
+          <div class="t-delta">{up_base:+.1f}%</div>
+        </div>
+        <div class="target-cell bull">
+          <div class="t-lbl">Bull</div>
+          <div class="t-val">{fmt_money(opinion.get("target_bull","—"))}</div>
+          <div class="t-delta">{up_bull:+.1f}%</div>
+        </div>
       </div>
     </div>
   </div>
@@ -2310,18 +2563,114 @@ _DETAILED_V3_CSS = r"""
   .full-bleed.cover .pick-box {
     left: 14mm;
     right: 14mm;
-    bottom: 28mm;
+    bottom: 8mm;
+    padding: 2.5mm 5mm !important;
+    min-height: 18mm;
   }
   .full-bleed.cover .cover-footer {
     left: 14mm;
     right: 14mm;
-    bottom: 10mm;
+    bottom: 2mm;
+    padding-top: 1mm;
+    font-size: 5.5pt;
   }
   .full-bleed.cover .cover-body {
-    margin-top: 34mm;
+    margin-top: 12mm;
     position: relative;
     z-index: 1;
   }
+  .full-bleed.cover h1.stock-title {
+    font-size: 40pt;
+    margin: 3mm 0 2mm 0;
+  }
+  .full-bleed.cover .tagline {
+    margin-top: 4mm;
+    font-size: 14pt;
+    line-height: 1.25;
+    max-width: 130mm;
+  }
+  .full-bleed.cover .dashboard {
+    position: absolute;
+    left: 14mm;
+    right: 14mm;
+    bottom: 48mm;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 4mm;
+    background: rgba(0,0,0,0.22);
+    border-top: 0.8px solid rgba(184,146,46,0.7);
+    border-bottom: 0.8px solid rgba(184,146,46,0.7);
+    padding: 2.5mm 4mm;
+  }
+  .full-bleed.cover .dash-block {
+    padding: 0;
+    font-size: 6.8pt;
+    line-height: 1.35;
+  }
+  .full-bleed.cover .dash-title {
+    color: #b8922e;
+    font-size: 6.5pt;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    font-weight: 700;
+    margin-bottom: 1.5mm;
+    padding-bottom: 0.8mm;
+    border-bottom: 0.5px solid rgba(184,146,46,0.5);
+  }
+  .full-bleed.cover .dash-row {
+    display: flex;
+    justify-content: space-between;
+    color: #e0e6f0;
+    font-variant-numeric: tabular-nums;
+    padding: 0.15mm 0;
+  }
+  .full-bleed.cover .dash-row .lbl { color: #8593aa; font-size: 6.5pt; }
+  .full-bleed.cover .dash-row .val { color: #ffffff; font-weight: 600; font-size: 6.8pt; }
+  .full-bleed.cover .target-spectrum {
+    display: grid;
+    grid-template-columns: 1fr 1.2fr 1fr;
+    gap: 0;
+    margin-top: 1mm;
+    flex: 1;
+    margin-left: 5mm;
+  }
+  .full-bleed.cover .target-cell {
+    padding: 0.8mm 2mm;
+    border-right: 0.5px solid rgba(184,146,46,0.3);
+    text-align: center;
+  }
+  .full-bleed.cover .target-cell:last-child { border-right: none; }
+  .full-bleed.cover .target-cell .t-lbl {
+    font-size: 6.5pt;
+    letter-spacing: 1.5px;
+    color: #8593aa;
+    text-transform: uppercase;
+    font-weight: 700;
+  }
+  .full-bleed.cover .target-cell .t-val {
+    font-family: var(--font-heading);
+    font-size: 12pt;
+    font-weight: 400;
+    color: #e0e6f0;
+    margin-top: 0.3mm;
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+  .full-bleed.cover .target-cell.base .t-val {
+    font-size: 16pt;
+    color: #ffffff;
+    font-weight: 500;
+  }
+  .full-bleed.cover .target-cell.base .t-lbl { color: #b8922e; }
+  .full-bleed.cover .target-cell.bear .t-val { color: #e2a5a5; }
+  .full-bleed.cover .target-cell.bull .t-val { color: #86c7a5; }
+  .full-bleed.cover .target-cell .t-delta {
+    font-size: 7.5pt;
+    color: #8593aa;
+    margin-top: 0.3mm;
+    font-variant-numeric: tabular-nums;
+  }
+  .full-bleed.cover .target-cell.base .t-delta { color: #d0d6e0; font-weight: 600; }
   .cover .brand-bar {
     display: flex;
     justify-content: space-between;
@@ -2712,6 +3061,26 @@ _DETAILED_V3_CSS = r"""
   }
   .toc-item .title { flex: 1; }
   .toc-item .pg { color: #7a8699; font-variant-numeric: tabular-nums; }
+  /* 독립 TOC 페이지 (full-bleed) 용 확장 레이아웃 */
+  .toc.toc-full {
+    margin-top: 8mm;
+    columns: 2;
+    column-gap: 14mm;
+    column-rule: 1px solid #e4e7ec;
+  }
+  .toc.toc-full .toc-item {
+    padding: 3mm 0;
+    font-size: 10pt;
+  }
+  .toc.toc-full .toc-item .num {
+    font-size: 11pt;
+    font-family: Georgia, serif;
+  }
+  .toc.toc-full .toc-item:hover { background: #fafbfc; }
+  .toc-page .section-intro {
+    max-width: 140mm;
+    margin-bottom: 8mm;
+  }
 
   /* ---------- Page footer ---------- */
   .page-footer {
@@ -2773,6 +3142,9 @@ def _generate_detailed_v3(data, output_dir):
     opinion = data["opinion"]
     sections = data["sections"]
     fin = data["financials"]
+    peers = data.get("peers", [])
+    catalysts = data.get("catalysts", [])
+    segs = data.get("segments", [])
 
     name = meta["stock_name"].replace(" ", "")
     is_kr = meta["country"] == "KR"
@@ -2805,16 +3177,16 @@ def _generate_detailed_v3(data, output_dir):
     else:
         range_str = "—"
 
-    # ---- Tagline (cover)
-    tagline = meta.get("subtitle")
+    # ---- Tagline (cover) -- meta.tagline 우선, 없으면 한국어 fallback
+    tagline = meta.get("tagline") or meta.get("subtitle")
     if not tagline:
         industry = meta.get('industry', '')
         if rating == "BUY":
-            tagline = f"{industry}의 비대칭 기회"
+            tagline = f"{industry} -- 시장이 아직 보지 못한 비대칭"
         elif rating == "SELL":
-            tagline = f"{industry}에서 가격이 내러티브를 앞서가다"
+            tagline = f"{industry} -- 내러티브가 가격을 앞서간 자리"
         else:
-            tagline = f"{industry} · Balance of risk tilts to the downside"
+            tagline = f"{industry} -- 기대와 리스크 사이, 균형의 순간"
     tagline = _strip_emoji(tagline)
 
     # ---- R/R short text
@@ -2827,13 +3199,136 @@ def _generate_detailed_v3(data, output_dir):
     final_conclusion = _sv2_first_para(sections.get("s13_thesis", "") or sections.get("s01_opinion", ""), 360)
 
     # =====================================================================
-    # PAGE 1 — COVER
+    # Cover Dashboard 데이터 준비 (1M/6M/12M 수익률, Stock Data, Consensus)
+    # =====================================================================
+    def _calc_return(prices, trading_days):
+        if not prices or len(prices) < 2:
+            return None
+        try:
+            cur = float(prices[0].get('close', 0))
+            idx = min(trading_days, len(prices) - 1)
+            past = float(prices[idx].get('close', 0))
+            if past == 0:
+                return None
+            return (cur - past) / past * 100
+        except (TypeError, ValueError):
+            return None
+
+    daily = price.get('daily_prices', []) or []
+    r_1m = _calc_return(daily, 21)
+    r_6m = _calc_return(daily, 126)
+    r_12m = _calc_return(daily, 252)
+
+    def _ret_cell(v):
+        if v is None:
+            return '<span class="val">—</span>'
+        color = "#86c7a5" if v > 0 else "#e2a5a5"
+        return f'<span class="val" style="color:{color};">{v:+.1f}%</span>'
+
+    def _price_fmt(v):
+        if v is None or v == "":
+            return None
+        try:
+            n = float(v)
+            if is_kr:
+                return f"{int(n):,}원"
+            return f"${n:,.2f}"
+        except (TypeError, ValueError):
+            return str(v)
+
+    # 52주 고/저 통합 1행
+    if hi_52 and lo_52:
+        if is_kr:
+            range_52w_fmt = f"{int(lo_52):,} – {int(hi_52):,}"
+        else:
+            range_52w_fmt = f"${lo_52:,.2f} – ${hi_52:,.2f}"
+    else:
+        range_52w_fmt = None
+
+    # Stock Data (빈 값 자동 스킵)
+    stock_data_rows = [
+        ("시가총액", price.get("market_cap")),
+        ("52주 고/저", range_52w_fmt),
+        ("PER (TTM)", f'{price.get("per")}x' if price.get("per") else None),
+        ("PBR", f'{price.get("pbr")}x' if price.get("pbr") else None),
+        ("EPS", _price_fmt(price.get("eps"))),
+        ("BPS", _price_fmt(price.get("bps"))),
+        ("배당수익률", price.get("dividend_yield")),
+    ]
+    stock_data_html = ''
+    for lbl, val in stock_data_rows:
+        if val is None or val == "" or val == "—":
+            continue
+        stock_data_html += f'<div class="dash-row"><span class="lbl">{html_lib.escape(str(lbl))}</span><span class="val">{html_lib.escape(str(val))}</span></div>'
+
+    # Consensus Data (재무 테이블에서 실적/추정 년도 2개 발췌)
+    fin_headers_c = fin.get("headers", [])
+    fin_rows_c = fin.get("rows", [])
+    cons_rows_html = ''
+    if fin_headers_c and fin_rows_c:
+        last_actual = len(fin_headers_c) - 1
+        fwd_idx = None
+        for i in range(1, len(fin_headers_c)):
+            h = str(fin_headers_c[i]).upper()
+            if 'E' in h or 'F' in h:
+                fwd_idx = i
+                if last_actual == len(fin_headers_c) - 1:
+                    last_actual = i - 1
+                break
+        if fwd_idx is None:
+            fwd_idx = last_actual
+
+        y_act = str(fin_headers_c[last_actual]) if last_actual < len(fin_headers_c) else ""
+        y_fwd = str(fin_headers_c[fwd_idx]) if fwd_idx < len(fin_headers_c) else ""
+
+        rev_header = str(fin_headers_c[0]) if fin_headers_c else ""
+        unit_match = ""
+        if "조" in rev_header: unit_match = "조원"
+        elif "억" in rev_header: unit_match = "억원"
+
+        subtitle = f'<div style="font-size:6.5pt; color:#8593aa; letter-spacing:1.5px; margin-bottom:1.5mm; text-align:center;">{html_lib.escape(y_act)} 실적 &nbsp;→&nbsp; {html_lib.escape(y_fwd)} 추정 <span style="color:#b8922e;">({unit_match})</span></div>' if unit_match else ''
+
+        for lbl, kw in [("매출", "매출"), ("영업이익", "영업이익"), ("순이익", "순이익"), ("EPS", "EPS"), ("OPM", "OPM")]:
+            for row in fin_rows_c:
+                if row and kw in str(row[0]):
+                    v_act = str(row[last_actual]) if last_actual < len(row) else None
+                    v_fwd = str(row[fwd_idx]) if fwd_idx < len(row) else None
+                    if not v_act or v_act == "—":
+                        continue
+                    cons_rows_html += f'<div class="dash-row"><span class="lbl">{html_lib.escape(lbl)}</span><span class="val" style="font-size:7pt;">{html_lib.escape(v_act)} → {html_lib.escape(v_fwd)}</span></div>'
+                    break
+        cons_rows_html = subtitle + cons_rows_html
+    if not cons_rows_html:
+        cons_rows_html = '<div class="dash-row"><span class="lbl">재무 데이터 없음</span><span class="val">—</span></div>'
+
+    # 주가 수익률 (빈 값 자동 스킵, 52주 중복 제거)
+    ret_items = []
+    if r_1m is not None: ret_items.append(("1개월", _ret_cell(r_1m)))
+    if r_6m is not None: ret_items.append(("6개월", _ret_cell(r_6m)))
+    if r_12m is not None: ret_items.append(("12개월", _ret_cell(r_12m)))
+    if price.get("change_pct") is not None:
+        cp = price.get("change_pct", 0)
+        color_c = "#86c7a5" if cp > 0 else ("#e2a5a5" if cp < 0 else "#ffffff")
+        ret_items.append(("일일 변동", f'<span class="val" style="color:{color_c};">{cp:+.2f}%</span>'))
+    if price.get("per_forward_12m"):
+        ret_items.append(("Forward PER", f'<span class="val">{price.get("per_forward_12m")}x</span>'))
+    if price.get("sector_per"):
+        ret_items.append(("섹터 PER", f'<span class="val">{price.get("sector_per")}x</span>'))
+
+    returns_html = ''
+    for lbl, cell in ret_items:
+        returns_html += f'<div class="dash-row"><span class="lbl">{html_lib.escape(lbl)}</span>{cell}</div>'
+    if not returns_html:
+        returns_html = '<div class="dash-row"><span class="lbl">데이터 없음</span><span class="val">—</span></div>'
+
+    # =====================================================================
+    # PAGE 1 — COVER (융합: 네이비/골드 기관급 + 위닝펀드 Dashboard + 3-Target 스펙트럼)
     # =====================================================================
     cover_html = f"""
 <section class="full-bleed cover">
   <div class="accent-corner"></div>
   <div class="brand-bar">
-    <div>Equity Research · Institutional Grade</div>
+    <div>AI Equity Research · {html_lib.escape(meta.get("country","KR"))} · {html_lib.escape(meta.get("market",""))}</div>
     <div>{html_lib.escape(meta.get("date",""))}</div>
   </div>
   <div class="cover-body">
@@ -2842,16 +3337,46 @@ def _generate_detailed_v3(data, output_dir):
     <div class="stock-meta">{html_lib.escape(meta.get("stock_code",""))} &nbsp;·&nbsp; {html_lib.escape(meta.get("industry",""))}</div>
     <div class="tagline">{html_lib.escape(tagline)}</div>
   </div>
+  <div class="dashboard">
+    <div class="dash-block">
+      <div class="dash-title">핵심 지표</div>
+      {stock_data_html}
+    </div>
+    <div class="dash-block">
+      <div class="dash-title">컨센서스 요약</div>
+      {cons_rows_html}
+    </div>
+    <div class="dash-block">
+      <div class="dash-title">주가 수익률 · 밸류</div>
+      {returns_html}
+    </div>
+  </div>
   <div class="pick-box">
-    <div class="pick-label">Our Call</div>
-    <div class="pick-row">
-      <div>
+    <div class="pick-label">투자의견 · 3-시나리오 목표주가 스펙트럼</div>
+    <div class="pick-row" style="align-items:flex-start;">
+      <div style="padding-top:2mm;">
         <span class="pick-badge" style="background:{rating_color};">{html_lib.escape(rating)}</span>
+        <div style="margin-top:3mm; font-size:7.5pt; color:#b8c3d4; letter-spacing:1.5px;">
+          Current &nbsp; <b style="color:#ffffff;">{fmt_money(cur_price)}</b><br>
+          R/R &nbsp;&nbsp; <b style="color:#b8922e;">{html_lib.escape(rr_short)}</b>
+        </div>
       </div>
-      <div class="pick-metrics">
-        <div>Target (Base) &nbsp; <span class="big">{fmt_money(opinion["target_base"])}</span></div>
-        <div>Current &nbsp; {fmt_money(cur_price)} &nbsp;·&nbsp; Upside {up_base:+.1f}%</div>
-        <div>Risk · Reward &nbsp; {html_lib.escape(rr_short)}</div>
+      <div class="target-spectrum">
+        <div class="target-cell bear">
+          <div class="t-lbl">Bear</div>
+          <div class="t-val">{fmt_money(opinion.get("target_bear"))}</div>
+          <div class="t-delta">{down_bear:+.1f}%</div>
+        </div>
+        <div class="target-cell base">
+          <div class="t-lbl">Base</div>
+          <div class="t-val">{fmt_money(opinion["target_base"])}</div>
+          <div class="t-delta">{up_base:+.1f}%</div>
+        </div>
+        <div class="target-cell bull">
+          <div class="t-lbl">Bull</div>
+          <div class="t-val">{fmt_money(opinion.get("target_bull"))}</div>
+          <div class="t-delta">{up_bull:+.1f}%</div>
+        </div>
       </div>
     </div>
   </div>
@@ -2879,6 +3404,37 @@ def _generate_detailed_v3(data, output_dir):
             f'</div>'
         )
 
+    # ---- Executive Summary: Peer mini table (커버 중복 제거 후 추가)
+    peer_mini_html = ''
+    if peers:
+        peer_mini_html = '<table class="nyt" style="margin-top:3mm;"><thead><tr><th>Peer</th><th class="num">시가총액</th><th class="num">PER</th><th class="num">PBR</th><th>비고</th></tr></thead><tbody>'
+        for pe in peers[:5]:
+            hi_cls = ' class="bull-row"' if pe.get("highlight") else ''
+            peer_mini_html += (
+                f'<tr{hi_cls}>'
+                f'<td class="name">{html_lib.escape(_strip_emoji(str(pe.get("name",""))))}</td>'
+                f'<td class="num">{html_lib.escape(_strip_emoji(str(pe.get("market_cap",""))))}</td>'
+                f'<td class="num">{html_lib.escape(_strip_emoji(str(pe.get("per",""))))}</td>'
+                f'<td class="num">{html_lib.escape(_strip_emoji(str(pe.get("pbr",""))))}</td>'
+                f'<td style="font-size:8.5pt;">{html_lib.escape(_strip_emoji(str(pe.get("note","")))[:50])}</td>'
+                f'</tr>'
+            )
+        peer_mini_html += '</tbody></table>'
+
+    # ---- Executive Summary: Catalyst mini (상위 3건)
+    cat_mini_html = ''
+    if catalysts:
+        cat_mini_html = '<table class="nyt" style="margin-top:3mm;"><thead><tr><th>시기</th><th>이벤트</th><th class="num">영향</th></tr></thead><tbody>'
+        for ct in catalysts[:4]:
+            cat_mini_html += (
+                f'<tr>'
+                f'<td class="name">{html_lib.escape(_strip_emoji(str(ct.get("date",""))))}</td>'
+                f'<td>{html_lib.escape(_strip_emoji(str(ct.get("event","")))[:70])}</td>'
+                f'<td class="num">{html_lib.escape(_strip_emoji(str(ct.get("impact",""))))}</td>'
+                f'</tr>'
+            )
+        cat_mini_html += '</tbody></table>'
+
     exec_html = f"""
 <section class="full-bleed exec-page">
   <div class="running-header">
@@ -2887,55 +3443,45 @@ def _generate_detailed_v3(data, output_dir):
   </div>
 
   <div class="section-caption">00 · EXECUTIVE SUMMARY</div>
-  <h2 class="section-heading">투자의견 요약</h2>
-
-  <div class="verdict-card">
-    <div class="verdict-head">
-      <div class="title">Investment Verdict</div>
-      <div class="verdict-rating-badge" style="background:{rating_color};">{html_lib.escape(rating)}</div>
-    </div>
-    <div class="verdict-grid">
-      <div class="verdict-cell">
-        <div class="lbl">Current Price</div>
-        <div class="val">{fmt_money(cur_price)}</div>
-        <div class="delta">52W {html_lib.escape(range_str)}</div>
-      </div>
-      <div class="verdict-cell">
-        <div class="lbl">Target · Base</div>
-        <div class="val">{fmt_money(opinion["target_base"])}</div>
-        <div class="delta {up_cls}">{up_base:+.1f}%</div>
-      </div>
-      <div class="verdict-cell last-col">
-        <div class="lbl">Target · Bull</div>
-        <div class="val">{fmt_money(opinion["target_bull"])}</div>
-        <div class="delta {bull_cls}">{up_bull:+.1f}%</div>
-      </div>
-      <div class="verdict-cell last-row">
-        <div class="lbl">Target · Bear</div>
-        <div class="val">{fmt_money(opinion["target_bear"])}</div>
-        <div class="delta {down_cls}">{down_bear:+.1f}%</div>
-      </div>
-      <div class="verdict-cell last-row">
-        <div class="lbl">Market Cap</div>
-        <div class="val">{html_lib.escape(str(price.get("market_cap","—")))}</div>
-        <div class="delta">PER {safe(price.get("per"))} · PBR {safe(price.get("pbr"))}</div>
-      </div>
-      <div class="verdict-cell last-col last-row">
-        <div class="lbl">Risk · Reward</div>
-        <div class="val">{html_lib.escape(rr_short)}</div>
-        <div class="delta">Div Yield {safe(price.get("dividend_yield"),"—")}%</div>
-      </div>
-    </div>
-  </div>
+  <h2 class="section-heading">한 문장 투자 논문 & 근거</h2>
 
   <div class="core-thesis">{core_thesis}</div>
 
-  <h3 class="md-h2" style="margin-top:9mm;">Table of Contents</h3>
-  <div class="toc">{toc_items_html}</div>
+  <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6mm; margin-top:5mm; font-size:8pt;">
+    <div>
+      <h4 style="font-family:var(--font-heading); font-size:10pt; color:#0b2545; border-left:3px solid #b8922e; padding-left:2mm; margin:0 0 1mm 0;">Peer Comparison</h4>
+      <p style="font-size:7.5pt; color:#5a6372; margin:0 0 1.5mm 0; line-height:1.35;">동일 업종 5사 밸류에이션 스냅샷 -- 상대 포지션 판단용.</p>
+      <style scoped>.exec-page table.nyt {{ font-size: 7.5pt; }} .exec-page table.nyt th, .exec-page table.nyt td {{ padding: 1.5mm 2mm; }}</style>
+      {peer_mini_html if peer_mini_html else '<p style="color:#9ca6b5;">Peer 데이터 없음</p>'}
+    </div>
+    <div>
+      <h4 style="font-family:var(--font-heading); font-size:10pt; color:#0b2545; border-left:3px solid #b8922e; padding-left:2mm; margin:0 0 1mm 0;">Key Catalysts (향후 4건)</h4>
+      <p style="font-size:7.5pt; color:#5a6372; margin:0 0 1.5mm 0; line-height:1.35;">투자 논문 실현/파괴를 좌우하는 임박 이벤트. 상세 s11 참조.</p>
+      {cat_mini_html if cat_mini_html else '<p style="color:#9ca6b5;">Catalyst 데이터 없음</p>'}
+    </div>
+  </div>
 
   <div class="page-footer">
     <span>{html_lib.escape(meta.get("stock_name",""))} · Executive Summary</span>
     <span>Page 02</span>
+  </div>
+</section>
+
+<section class="full-bleed toc-page">
+  <div class="running-header">
+    <div class="brand">{html_lib.escape(meta.get("stock_name",""))} · Equity Research</div>
+    <div>Table of Contents</div>
+  </div>
+
+  <div class="section-caption">— TABLE OF CONTENTS —</div>
+  <h2 class="section-heading">목차</h2>
+  <div class="section-intro">본 리서치 노트는 21개 섹션으로 구성되며, 각 섹션은 독립적으로 읽을 수 있도록 설계되었다. 권장 독서 순서: 01 → 02 → 09 → 12 → 13.</div>
+
+  <div class="toc toc-full">{toc_items_html}</div>
+
+  <div class="page-footer">
+    <span>{html_lib.escape(meta.get("stock_name",""))} · Table of Contents</span>
+    <span>Page 03</span>
   </div>
 </section>
 """

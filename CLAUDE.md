@@ -11,19 +11,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 필수 의존성 (최초 1회):
 ```bash
 pip install finance-datareader   # STEP 1.7 5년 연말 종가 정확 조회용 (WebSearch 추정 금지)
-playwright install chromium      # generate_all.py HTML→PDF 변환용
+pip install yfinance             # US 종목 forward estimates, 52주/PBR/BPS fallback
+playwright install chromium      # generate_all.py HTML->PDF 변환용
 ```
 
 `FinanceDataReader`가 없으면 `/research` STEP 1.7이 ImportError로 실패하고 역사 밴드가 추정치로 돌아가 JYP 사건이 재발한다.
 
+**환경변수 설정:** API 키는 `.env` 파일에서 관리 (`.gitignore`에 등록됨). `.env.example`을 복사하여 사용:
+```bash
+cp .env.example .env
+# .env 파일에 DART_API_KEY, KIS_APP_KEY, KIS_APP_SECRET 입력
+```
+bash 세션에서 로드: `source <(grep -v '^#' .env | grep '=' | sed 's/^/export /')`
+
 ## Key Commands
 
 ```bash
-# 리포트 생성 (analysis JSON → 단일 상세 PDF, Navy/Gold v3 디자인)
+# 리포트 생성 (analysis JSON -> 단일 상세 PDF, Navy/Gold v3 디자인)
 python scripts/generate_all.py scripts/analysis_{종목명}.json
 
-# 재무 데이터 자동 요약 (DART/KIS → financial_summary.json)
-python scripts/financial_summary.py data/{종목명}
+# 재무 데이터 자동 요약 - 한국
+python scripts/financial_summary.py {종목명} {종목코드}
+
+# 재무 데이터 자동 요약 - 미국 (SEC EDGAR + KIS + yfinance)
+python scripts/financial_summary_us.py {TICKER} [EXCD]
+# EXCD: NAS(나스닥, 기본), NYS(뉴욕), AMS(아멕스). 주요 NYSE 종목은 자동 감지.
 
 # 사업보고서 핵심 인용 추출
 python scripts/report_extractor.py data/{종목명}/data_dart_reports.json
@@ -61,25 +73,27 @@ python -c "import py_compile; py_compile.compile('scripts/generate_all.py', dora
 ## Data Flow
 
 ```
-한글 입력 → KR 종목: DART + KIS API → data/{종목명}/
-영문 입력 → US 종목: SEC EDGAR + KIS 해외 → data/{티커}/
+한글 입력 -> KR 종목: DART + KIS API -> data/{종목명}/
+영문 입력 -> US 종목: SEC EDGAR + KIS 해외 + yfinance -> data/{TICKER}/
 
-data/{종목명}/
-├── data_dart_financials.json   # 전체 재무제표 (127개+ 항목, 3년)
-├── data_dart_reports.json      # 사업보고서 본문 (5개)
-├── data_kis.json               # 현재가, 수급, 일봉
-├── financial_summary.json      # 자동 정리된 재무 요약
-└── report_quotes.json          # 사업보고서 핵심 인용
+data/{종목명}/                         data/{TICKER}/
+├── data_dart_financials.json          ├── data_sec.json (XBRL 재무+10-K/10-Q 본문)
+├── data_dart_reports.json             ├── data_kis_us.json (현재가, 일봉)
+├── data_kis.json                      └── financial_summary.json (SEC+KIS+yfinance 통합)
+├── data_kis_financials.json
+├── financial_summary.json
+└── report_quotes.json
 
-scripts/analysis_{종목명}.json → generate_all.py → output/{종목명}/
+scripts/analysis_{종목명}.json -> generate_all.py -> output/{종목명}/
 ```
 
 ## API Configuration
 
-API 키는 환경변수 또는 scripts 내 기본값 사용 (모의투자 계정):
-- `DART_API_KEY` — DART 전자공시 API
-- `KIS_APP_KEY`, `KIS_APP_SECRET` — 한국투자증권 OpenAPI
-- `KIS_BASE_URL` — 기본: `https://openapivts.koreainvestment.com:29443` (모의투자)
+API 키는 `.env` 파일에서 환경변수로 관리 (하드코딩 fallback 제거됨, 미설정 시 경고):
+- `DART_API_KEY` -- DART 전자공시 API
+- `KIS_APP_KEY`, `KIS_APP_SECRET` -- 한국투자증권 OpenAPI (KR + US 해외주식 모두 사용)
+- `KIS_BASE_URL` -- 기본: `https://openapivts.koreainvestment.com:29443` (모의투자)
+- yfinance는 API 키 불필요 (US 종목 forward estimates/52주/PBR fallback용)
 
 ## ⚠️ KIS API 반환 스키마 — 한글 키 사용
 
@@ -175,7 +189,19 @@ KIS 파일 읽기 실패 시 이제 경고를 남긴다 (과거: 조용히 pass)
 - "영업수익" ≠ "영업이익" — 부분매칭 주의
 - `financial_summary.py`가 자동으로 정리하므로, DART 원본을 직접 파싱하지 말 것
 
-## /research 스킬 실행 흐름 (v4.3 — 작성 단일 + 검증 서브에이전트)
+## SEC EDGAR XBRL 주의사항 (US 종목)
+
+- **10-Q 손익/현금흐름은 YTD 누적으로 보고됨** -- Q2 = 1~6월 누적, Q3 = 1~9월 누적. 독립 분기 = 현재 누적 - 전 분기 누적으로 역산 필수. `financial_summary_us.py`가 자동 처리.
+- **같은 회사가 시기별로 다른 XBRL 태그 사용** -- 예: Tesla는 2017까지 `DepreciationDepletionAndAmortization`, 이후 `Depreciation`. `sec_edgar.py`의 extract_financials()는 모든 후보 태그를 병합(첫 태그 우선, 빈 연도만 후순위 채움).
+- **KIS 해외주식 API는 국내 대비 반환 필드 부족** -- PBR/BPS/52주 고저가 0으로 반환될 수 있음. `financial_summary_us.py`가 yfinance로 자동 fallback.
+- **회계연도(Fiscal Year) 주의** -- Apple(9월), Microsoft(6월) 등 비표준 FY 기업은 `period[:4]` 연도 추출 시 데이터 혼입 가능. 현재 Tesla/NVIDIA 등 12월 결산 기업은 정상.
+- US 재무 데이터 단위는 **raw USD** (억원이 아님). 리포트에서 $B/$M 변환 필요.
+
+## /research 리포트 언어 규칙
+
+**KR/US 종목 무관하게 리포트(analysis.json sections s01~s21)는 반드시 한글로 작성한다.** 독자가 한국 개인 투자자이므로 영문 리포트는 금지. 고유명사(Tesla, BYD, Megapack), 재무 약어(OPM, EPS, EBITDA), 통화($)는 원문 유지. segments/catalysts/peers 서술 필드도 한글. TSLA v1에서 21섹션 전체를 영어로 작성하는 사고 발생 -- 이 규칙으로 재발 방지.
+
+## /research 스킬 실행 흐름 (v4.3 -- 작성 단일 + 검증 서브에이전트)
 
 **작성은 메인 에이전트 단독, 검증만 `report-critic` 서브에이전트.** 메인 에이전트가 21섹션을 순차 작성하고, STEP 6 2~3회차에서 `report-critic` 서브에이전트를 호출하여 Fresh context 가혹 비평을 받는다. 과거 v3 6-서브에이전트 실험(작성 분업)은 비용만 4~5배 증가하고 품질 개선이 미미하여 폐기되었으나 (상세: `.claude/agents/README.md`), v4.3의 `report-critic`은 **작성이 아닌 검증 역할**이므로 v3와 다른 맥락이다. 단일 비평 에이전트는 자기 일관성 편향을 구조적으로 제거하는 이점이 명확하므로 도입됨.
 
@@ -261,6 +287,28 @@ html, body {
 **디자인 철학 유지**: 한글 본문·UI = Pretendard (현대적 산세리프) / 영문 헤딩·대제목 = Georgia (NYT 세리프 스타일). 11곳 font-family가 모두 CSS 변수로 교체됐으며, 폰트 시스템 변경 시 `:root` 블록만 수정하면 전체 리포트에 전파된다.
 
 **Playwright Chromium**이 렌더링 시 웹폰트를 자동 로드하므로 로컬 폰트 설치 불필요. CDN은 jsdelivr (Pretendard 공식).
+
+## 커버 페이지 레이아웃 (v4.7 -- 겹침 방지 좌표)
+
+`generate_all.py` 의 `.full-bleed.cover` CSS는 Dashboard(핵심지표/컨센서스/수익률) + pick-box(3-Target 스펙트럼) + cover-body(회사명/tagline) + cover-footer 4개 요소가 A4 한 페이지에 들어가도록 절대 위치 좌표로 배치된다. v4.7에서 삼성전자 리포트 렌더링 시 Dashboard와 pick-box가 1mm 간격으로 붙어서 겹침이 발생한 사고를 수정하면서 좌표가 재조정되었다.
+
+**최종 좌표 (A4 297mm 기준, bottom 값 = 페이지 하단부터의 거리)**:
+
+| 요소 | bottom | 예상 높이 | 예상 top |
+|---|---|---|---|
+| cover-body (회사명+tagline) | (flow) | ~50mm | 12mm (margin-top) |
+| **Dashboard** | **48mm** | ~32mm | ~217mm |
+| **pick-box** | **8mm** | **~18mm** (min-height) | ~271mm |
+| cover-footer | 2mm | ~6mm | ~289mm |
+
+**Dashboard ↔ pick-box 간격 ≥ 24mm** 확보 (이전 1mm → 24mm).
+
+**서로 연결된 크기 제약**: Dashboard 내부 폰트 6.5~6.8pt / line-height 1.35 / padding 2.5mm, 3-Target 스펙트럼 t-val 12pt(Base 16pt) / padding 0.8mm 2mm, h1.stock-title 40pt, tagline 14pt / max-width 130mm. 이 값 중 하나라도 증가시키면 겹침 재발 가능 -- 변경 시 모든 블록 세로 합 재계산 필수.
+
+**사고 재발 방지 원칙**:
+- Dashboard는 **절대 bottom 48mm 아래로 내리지 말 것** (행 수가 많은 종목에서 pick-box 침범)
+- pick-box min-height: 18mm 는 3-Target 스펙트럼 최소 높이 기반이며 축소 불가
+- 새 종목 리포트 생성 후 **페이지 1 육안 확인 필수**. Dashboard와 pick-box가 붙어있으면 Dashboard bottom 값을 50mm 이상으로 추가 상향
 
 ## Windows 환경 주의
 
