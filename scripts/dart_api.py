@@ -112,7 +112,7 @@ def get_major_reports(corp_code: str) -> dict:
         "crtfc_key": DART_API_KEY,
         "corp_code": corp_code,
         "pblntf_ty": "A",  # A: 정기공시
-        "page_count": 20,
+        "page_count": 50,  # v4.10: 20→50 확대 (분기보고서 누락 방지)
         "sort": "date",
         "sort_mth": "desc"
     }
@@ -208,7 +208,11 @@ def html_to_text(html_content: str) -> str:
 
 
 def get_all_report_rcept_nos(corp_code: str) -> list:
-    """최근 4개 정기보고서 + 전년 사업보고서 = 최대 5개 접수번호 조회
+    """최근 6개 정기보고서 + 전년 사업보고서 1개 = 최대 7개 접수번호 조회 (v4.10)
+
+    v4.10 확대: 기존 4개 → 6개. 삼성전자 사례처럼 최근 4개가 사업+반기 2쌍으로 채워져
+    Q1/Q3 분기보고서가 누락되는 사고 방지. 분기보고서는 최신 변화점 (신규 계약, 소송,
+    CapEx 변경, 위험 요인 변화) 검출에 필수이므로 반드시 포함한다.
 
     Returns:
         list of dict: [{"rcept_no", "report_nm", "rcept_dt", "type"}, ...]
@@ -292,15 +296,14 @@ def get_all_report_rcept_nos(corp_code: str) -> list:
         print("    정기보고서를 찾지 못했습니다.")
         return []
 
-    # 최근 4개 + 전년 사업보고서 1개 선별
-    # 날짜 역순 정렬 (이미 역순이지만 확실히)
+    # v4.10: 최근 6개 + 전년 사업보고서 1개 선별 (분기보고서 누락 방지)
     all_reports.sort(key=lambda x: x["rcept_dt"], reverse=True)
 
     selected = []
     annual_count = 0
 
     for report in all_reports:
-        if len(selected) < 4:
+        if len(selected) < 6:
             selected.append(report)
             if report["type"] == "사업보고서":
                 annual_count += 1
