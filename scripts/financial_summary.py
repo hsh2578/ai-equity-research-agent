@@ -522,9 +522,9 @@ def print_summary(data: dict):
     cons = data.get("consensus", {}).get("summary", {})
     if cons:
         print(f"\n[컨센서스 ({cons.get('broker_count','?')}개 증권사)]")
-        tgt = cons.get("avg_target_price", 0)
-        cur = data["kis"].get("current_price", 0)
-        upside = ((tgt - cur) / cur * 100) if cur else 0
+        tgt = cons.get("avg_target_price") or 0
+        cur = data["kis"].get("current_price") or 0
+        upside = ((tgt - cur) / cur * 100) if (cur and tgt) else 0
         print(f"  평균 목표가: {tgt:,}원 (상승여력 {upside:+.1f}%)")
         print(f"  평균 Forward EPS: {cons.get('avg_eps_forward', 0):,}원")
         print(f"  평균 Forward PER: {cons.get('avg_per_forward')}x")

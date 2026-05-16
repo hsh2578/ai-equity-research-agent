@@ -15,6 +15,27 @@ import zipfile
 import io
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
+from pathlib import Path
+
+def _load_env_auto():
+    """프로젝트 → 상위 폴더 .env 자동 로드"""
+    here = Path(__file__).resolve().parent
+    for env_path in [here.parent / '.env', here.parent.parent / '.env', here.parent.parent.parent / '.env']:
+        if not env_path.exists():
+            continue
+        try:
+            for line in env_path.read_text(encoding='utf-8').splitlines():
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                k, v = line.split('=', 1)
+                k, v = k.strip(), v.strip().strip('"').strip("'")
+                if k and v and k not in os.environ:
+                    os.environ[k] = v
+        except Exception:
+            pass
+
+_load_env_auto()
 
 DART_API_KEY = os.environ.get("DART_API_KEY", "")
 if not DART_API_KEY:

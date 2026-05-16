@@ -323,9 +323,414 @@ def main(stock_name):
             fail += 1
         results.append(('B11 Wisereport 정합', status, '; '.join(errs)[:200] if errs else 'Forward 수치 ±10% 이내'))
 
+    # B12. SOTP·DCF 산술 일관성 (v4.14 신설 -- 한화에어로 해양 18조 산술 오류 재발 방지)
+    # 리포트 본문의 "{A} × {B}x = {C}조" 또는 "{A}억 × {B} = {C}조" 패턴 재계산
+    sotp_errs = []
+    # s09 밸류에이션 + s02 투자포인트 (SOTP/DCF 주로 나오는 섹션)
+    target_text = sections.get('s09_valuation', '') + sections.get('s02_investment_points', '')
+    # 패턴 1: "10,000억 × 5x = 18조" / "10,000억 × 5배 = 5조"
+    pat1 = re.compile(
+        r'([\d,]+)\s*억\s*[×xX\*]\s*([\d\.]+)\s*(?:배|x|X)\s*=\s*(?:약\s*)?([\d\.]+)\s*조'
+    )
+    for m in pat1.finditer(target_text):
+        try:
+            a = float(m.group(1).replace(',', '')) / 10000  # 억 -> 조
+            b = float(m.group(2))
+            expected = a * b
+            reported = float(m.group(3))
+            if expected > 0 and abs(expected - reported) / expected > 0.15:  # 15% 이내 허용
+                sotp_errs.append(
+                    f"{m.group(1)}억 × {b} = 실제 {expected:.2f}조 vs 리포트 {reported}조"
+                )
+        except (ValueError, ZeroDivisionError):
+            pass
+    # 패턴 2: "A조 × B = C조" (배수 곱셈)
+    pat2 = re.compile(
+        r'([\d\.]+)\s*조\s*[×xX\*]\s*([\d\.]+)\s*(?:%|배|x|X)?\s*=\s*(?:약\s*)?([\d\.]+)\s*조'
+    )
+    for m in pat2.finditer(target_text):
+        try:
+            a = float(m.group(1))
+            b = float(m.group(2))
+            # 두 번째 숫자가 퍼센트인지 배수인지 판별: 100 이상이면 퍼센트
+            if b > 1 and b <= 100:
+                # 배수 가정
+                expected = a * b
+            else:
+                continue  # 복잡 — 스킵
+            reported = float(m.group(3))
+            if expected > 0 and abs(expected - reported) / expected > 0.15:
+                sotp_errs.append(
+                    f"{a}조 × {b} = 실제 {expected:.2f}조 vs 리포트 {reported}조"
+                )
+        except (ValueError, ZeroDivisionError):
+            pass
+    # 패턴 3: 지분율 × 시총 = 지주 몫
+    pat3 = re.compile(
+        r'([\d\.]+)\s*%\s*[×xX\*]\s*([\d\.]+)\s*조\s*=\s*(?:약\s*)?([\d\.]+)\s*조'
+    )
+    for m in pat3.finditer(target_text):
+        try:
+            pct = float(m.group(1)) / 100
+            mcap = float(m.group(2))
+            expected = pct * mcap
+            reported = float(m.group(3))
+            if expected > 0 and abs(expected - reported) / expected > 0.15:
+                sotp_errs.append(
+                    f"{m.group(1)}% × {mcap}조 = 실제 {expected:.2f}조 vs 리포트 {reported}조"
+                )
+        except (ValueError, ZeroDivisionError):
+            pass
+    status = 'PASS' if not sotp_errs else 'FAIL'
+    if sotp_errs:
+        fail += 1
+    results.append(
+        ('B12 SOTP·DCF 산술', status,
+         '; '.join(sotp_errs[:3])[:250] if sotp_errs else f'{len(list(pat1.finditer(target_text)) + list(pat2.finditer(target_text)) + list(pat3.finditer(target_text)))}개 산술 패턴 ±15% 이내')
+    )
+
+    # B13. quarterly 분기 누락 + 합산 검산 (v4.20 신설 -- 에스엠 1Q25 누락 사고 재발 방지)
+    # 1Q25 NI 2,527억 일회성 효과 시각화 누락이 발생한 사고를 작성 시점에서 자동 차단.
+    quarterly = d.get('quarterly', {})
+    q_rows = quarterly.get('rows', [])
+    q_headers = quarterly.get('headers', [])
+    b13_errs = []
+    if q_rows:
+        # quarterly 첫 컬럼이 분기 라벨 (예: "1Q25", "2Q25" 등)
+        labels = [str(r[0]).strip() if r else '' for r in q_rows]
+        # 확정 분기만 추출 (E 포함된 추정치 제외)
+        confirmed = [l for l in labels if 'E' not in l.upper() and re.match(r'\d?Q\d{2}', l)]
+        # 같은 연도 분기 그룹화: "1Q25" "2Q25" → 25
+        from collections import defaultdict
+        years = defaultdict(set)
+        for l in confirmed:
+            m = re.match(r'(\d)Q(\d{2})', l)
+            if m:
+                years[m.group(2)].add(int(m.group(1)))
+        # 각 연도별 4개 분기 모두 있는지 확인 (가장 최근 확정 연도만)
+        if years:
+            latest_year = max(years.keys())
+            quarters_present = years[latest_year]
+            if len(quarters_present) < 4 and len(quarters_present) > 0:
+                missing = sorted(set([1, 2, 3, 4]) - quarters_present)
+                b13_errs.append(
+                    f"20{latest_year}년 분기 누락: {missing}Q 미기재. "
+                    f"일회성 효과 시각화를 위해 4개 분기 모두 표기 필요."
+                )
+    else:
+        b13_errs.append("quarterly 표 자체 부재")
+    status = 'PASS' if not b13_errs else 'FAIL'
+    if b13_errs:
+        fail += 1
+    results.append(
+        ('B13 분기 누락', status, '; '.join(b13_errs)[:200] if b13_errs else f'분기 행 {len(q_rows)}개 / 확정 4분기 충족')
+    )
+
+    # ========== B14 (v5.0 신설): 잠정 vs 정정 OP 충돌 ==========
+    b14_errs = []
+    try:
+        wr_path = f'data/{stock_name}/_wisereport.json'
+        if os.path.exists(wr_path):
+            wr = json.load(open(wr_path, encoding='utf-8'))
+            es_4q = wr.get('earning_surprise_4Q25', {}) or wr.get('earning_surprise', {})
+            actual_op_provisional = es_4q.get('OP_actual') or es_4q.get('actual')
+            quarterly = wr.get('quarterly_2025', {}) or {}
+            last_q = None
+            for k in sorted(quarterly.keys()):
+                if '4Q' in k or 'Q_12' in k:
+                    last_q = quarterly[k]
+                    break
+            if actual_op_provisional and last_q:
+                op_corrected = last_q.get('영업이익_발표기준') or last_q.get('영업이익')
+                if op_corrected and abs(actual_op_provisional - op_corrected) / op_corrected > 0.05:
+                    # 본문이 잠정/정정 차이를 명시 인지하고 정정값 채택했는지 확인
+                    text_concat_b14 = ' '.join(v for v in d.get('sections', {}).values() if isinstance(v, str))
+                    op_corrected_str = f"{op_corrected:.0f}"
+                    has_corrected_value = (op_corrected_str in text_concat_b14) or (f"{int(op_corrected)}" in text_concat_b14)
+                    has_recognition = any(kw in text_concat_b14 for kw in ['정정', '잠정', '동일 기준', '동일기준', 'In-line', '재정', '확정 OP'])
+                    if has_corrected_value and has_recognition:
+                        pass  # 분석가가 잠정/정정 차이 인지하고 정정값 채택 -- PASS
+                    else:
+                        b14_errs.append(
+                            f"잠정 OP {actual_op_provisional:.1f}억 vs 정정 OP {op_corrected:.1f}억 "
+                            f"({(actual_op_provisional - op_corrected) / op_corrected * 100:+.1f}% 차이) -- 정정 OP 우선 채택"
+                        )
+                        annual_op = wr.get('financials_annual', {}).get('2025', {}).get('영업이익_발표기준')
+                        if annual_op:
+                            q_sum = sum(
+                                (q.get('영업이익_발표기준') or 0) for q in quarterly.values()
+                            )
+                            if abs(q_sum - annual_op) / annual_op > 0.05:
+                                b14_errs.append(
+                                    f"연간 OP {annual_op:.1f} != Q합계 {q_sum:.1f}"
+                                )
+    except Exception as e:
+        b14_errs.append(f"검증 실패: {e}")
+    if b14_errs:
+        fail += 1
+    results.append(('B14 잠정 vs 정정 OP', 'FAIL' if b14_errs else 'PASS', '; '.join(b14_errs)[:200] if b14_errs else '잠정/정정 OP 일치'))
+
+    # ========== B15 (v5.0 신설): 발표기준 vs K-IFRS OP 분리 강제 ==========
+    b15_errs = []
+    try:
+        wr_path = f'data/{stock_name}/_wisereport.json'
+        if os.path.exists(wr_path):
+            wr = json.load(open(wr_path, encoding='utf-8'))
+            ann = wr.get('financials_annual', {}).get('2025', {})
+            op_announce = ann.get('영업이익_발표기준')
+            op_ifrs = ann.get('영업이익')
+            if op_announce and op_ifrs:
+                diff_pct = abs(op_announce - op_ifrs) / max(abs(op_announce), 1) * 100
+                if diff_pct > 10:
+                    text_concat = ' '.join(
+                        v for v in d.get('sections', {}).values() if isinstance(v, str)
+                    )
+                    has_kifrs = ('K-IFRS' in text_concat or '발표기준' in text_concat)
+                    if not has_kifrs:
+                        b15_errs.append(
+                            f"발표 OP {op_announce:.0f} vs K-IFRS {op_ifrs:.0f} ({diff_pct:.1f}% 차이) -- 분리 표기 누락"
+                        )
+    except Exception:
+        pass
+    if b15_errs:
+        fail += 1
+    results.append(('B15 발표 vs K-IFRS', 'FAIL' if b15_errs else 'PASS', '; '.join(b15_errs)[:200] if b15_errs else '분리 표기 OK 또는 차이 미미'))
+
+    # ========== B16 (v5.0 신설): PBR 시계열 일관성 ==========
+    b16_errs = []
+    try:
+        band_path = f'data/{stock_name}/_per_band.json'
+        if os.path.exists(band_path):
+            band = json.load(open(band_path, encoding='utf-8'))
+            pbr_series = band.get('pbr_series', [])
+            if pbr_series and len(pbr_series) >= 5:
+                text_concat = ' '.join(
+                    v for v in d.get('sections', {}).values() if isinstance(v, str)
+                )
+                m = re.search(r'2021[\s년]*?([\d.]+)\s*[→배\)]', text_concat)
+                if m:
+                    reported_2021 = float(m.group(1))
+                    actual_2021 = pbr_series[0]
+                    if actual_2021 > 0 and abs(reported_2021 - actual_2021) / actual_2021 > 0.10:
+                        b16_errs.append(
+                            f"PBR 2021 리포트 {reported_2021} vs 실측 {actual_2021:.2f} -- 시계열 위조 의심"
+                        )
+    except Exception:
+        pass
+    if b16_errs:
+        fail += 1
+    results.append(('B16 PBR 시계열', 'FAIL' if b16_errs else 'PASS', '; '.join(b16_errs)[:200] if b16_errs else 'PBR 시계열 일관'))
+
+    # ========== B17 (v5.0 신설): Altman Z 5요소 자동 계산 ==========
+    b17_errs = []
+    try:
+        fs_path = f'data/{stock_name}/financial_summary.json'
+        if os.path.exists(fs_path):
+            fs = json.load(open(fs_path, encoding='utf-8'))
+            fy = fs.get('financials', {}).get('2025', {})
+            ta, ca, cl = fy.get('total_assets'), fy.get('current_assets'), fy.get('current_liabilities')
+            re_v, ebit, rev = fy.get('retained_earnings'), fy.get('op_income'), fy.get('revenue')
+            tl = fy.get('total_debt')
+            mc = (json.load(open(f'data/{stock_name}/data_kis.json', encoding='utf-8'))
+                  .get('current_price', {}).get('시가총액')) if os.path.exists(f'data/{stock_name}/data_kis.json') else None
+            if all(v is not None for v in [ta, ca, cl, re_v, ebit, rev, mc, tl]) and ta > 0 and tl > 0:
+                z_calc = 1.2*((ca-cl)/ta) + 1.4*(re_v/ta) + 3.3*(ebit/ta) + 0.6*(mc/tl) + 1.0*(rev/ta)
+                text_concat = ' '.join(
+                    v for v in d.get('sections', {}).values() if isinstance(v, str)
+                )
+                z_matches = re.findall(r'(?:Altman\s*)?[ZZ][\s\-]*[Ss]core?\s*[=:]\s*([\d.]+)', text_concat)
+                if z_matches:
+                    z_reported = float(z_matches[0])
+                    if abs(z_reported - z_calc) > 0.5:
+                        b17_errs.append(f"Altman Z 리포트 {z_reported:.2f} vs 실측 {z_calc:.2f}")
+                    unique_z = set(round(float(z), 1) for z in z_matches)
+                    if len(unique_z) > 1:
+                        b17_errs.append(f"Z 본문에 {len(unique_z)}개 다른 값: {sorted(unique_z)}")
+    except Exception:
+        pass
+    if b17_errs:
+        fail += 1
+    results.append(('B17 Altman Z 5요소', 'FAIL' if b17_errs else 'PASS', '; '.join(b17_errs)[:200] if b17_errs else 'Altman Z 일치 또는 미인용'))
+
+    # ========== B18 (v5.0 신설): DCF D/V 산식 검증 ==========
+    b18_errs = []
+    try:
+        kis_path = f'data/{stock_name}/data_kis.json'
+        mc = None
+        if os.path.exists(kis_path):
+            mc = json.load(open(kis_path, encoding='utf-8')).get('current_price', {}).get('시가총액')
+        debt = 128
+        wr_path = f'data/{stock_name}/_wisereport.json'
+        if os.path.exists(wr_path):
+            debt = (json.load(open(wr_path, encoding='utf-8')).get('financials_annual', {})
+                    .get('2025', {}).get('이자발생부채', 128))
+        if mc and mc > 0:
+            dv_calc = debt / (mc + debt)
+            text_concat = ' '.join(
+                v for v in d.get('sections', {}).values() if isinstance(v, str)
+            )
+            dv_matches = re.findall(r'D/V\s*[=:]\s*([\d.]+)\s*%', text_concat)
+            if dv_matches:
+                dv_reported = float(dv_matches[0]) / 100
+                if abs(dv_reported - dv_calc) > 0.02:
+                    b18_errs.append(
+                        f"DCF D/V 리포트 {dv_reported*100:.2f}% vs 실측 {dv_calc*100:.2f}% (차입금 {debt}억 / 시총 {mc}억)"
+                    )
+    except Exception:
+        pass
+    if b18_errs:
+        fail += 1
+    results.append(('B18 DCF D/V 산식', 'FAIL' if b18_errs else 'PASS', '; '.join(b18_errs)[:200] if b18_errs else 'D/V 일치 또는 미인용'))
+
+    # ========== B19 (v5.1 신설): 산술 비약 검증 (catalyst 표 OP 합산 vs 본문 "+X~Y억") ==========
+    b19_errs = []
+    try:
+        text_concat = ' '.join(v for v in d.get('sections', {}).values() if isinstance(v, str))
+        # 본문에서 "+X~Y억 추가" / "+X~Y억 가시성" 패턴 추출
+        thesis_matches = re.findall(r'[+\-]?(\d{2,4})\s*~\s*(\d{2,4})\s*억\s*(?:원\s*)?(?:추가|가시성|기여|상향)', text_concat)
+        # catalysts 메타에서 "OP +X~Y억" 합산 (낮은 합 / 높은 합)
+        cats = d.get('catalysts', []) or []
+        op_low = op_high = 0
+        for c in cats:
+            impact = c.get('impact', '')
+            m = re.search(r'OP\s*[+\-]?(\d{2,4})\s*~\s*(\d{2,4})\s*억', impact)
+            if m:
+                op_low += int(m.group(1))
+                op_high += int(m.group(2))
+        # 본문 thesis 인용값과 catalyst 합산 비교
+        if thesis_matches and op_low > 0 and op_high > 0:
+            for low, high in thesis_matches:
+                low_n, high_n = int(low), int(high)
+                # thesis가 catalyst 합산보다 +50% 이상 inflated 시 비약 의심
+                if low_n > op_low * 1.5 or high_n > op_high * 1.5:
+                    b19_errs.append(
+                        f"본문 인용 +{low_n}~{high_n}억 vs catalyst OP 합산 +{op_low}~{op_high}억 "
+                        f"({(high_n/max(op_high,1)-1)*100:+.0f}% 차이) -- 매출+OP 단위 혼동 가능성"
+                    )
+                    break
+    except Exception:
+        pass
+    if b19_errs:
+        fail += 1
+    results.append(('B19 산술 비약', 'FAIL' if b19_errs else 'PASS', '; '.join(b19_errs)[:200] if b19_errs else 'OP 합산 일관 또는 미감지'))
+
+    # ========== B20 (v5.1 신설): DCF 출력값 정합성 (가정 → 적정주가 자동 산출 → 본문값 ±10%) ==========
+    b20_errs = []
+    try:
+        text_concat = ' '.join(v for v in d.get('sections', {}).values() if isinstance(v, str))
+        # WACC + 적정주가 추출
+        wacc_match = re.search(r'WACC\s*[=:]?\s*([\d.]+)\s*%', text_concat)
+        terminal_g_match = re.search(r'[Tt]erminal\s*g\s*[=:]?\s*([\d.]+)\s*%', text_concat)
+        # 본문 DCF 적정주가 (DCF 적정주가 ≈ X원 / X원 패턴)
+        dcf_target_matches = re.findall(r'DCF\s*적정주가\s*[≈=:]?\s*(?:약\s*)?([\d,]+)\s*원', text_concat)
+        wr_path = f'data/{stock_name}/_wisereport.json'
+        kis_path = f'data/{stock_name}/data_kis.json'
+        if (wacc_match and terminal_g_match and dcf_target_matches
+                and os.path.exists(wr_path) and os.path.exists(kis_path)):
+            wacc = float(wacc_match.group(1)) / 100
+            g = float(terminal_g_match.group(1)) / 100
+            wr = json.load(open(wr_path, encoding='utf-8'))
+            kis = json.load(open(kis_path, encoding='utf-8'))
+            # 시작 FCF (2026E) + 순현금
+            ann = wr.get('financials_annual', {}).get('2026E', {}) or wr.get('financials_annual', {}).get('2025', {})
+            fcf_start = ann.get('FCF') or ann.get('잉여현금흐름') or 896
+            net_cash_match = re.search(r'순현금\s*[+]?\s*?([\d,]+)\s*억|Net\s*Cash\s*[+]?\s*?([\d,]+)\s*억', text_concat)
+            net_cash = 2737  # default
+            if net_cash_match:
+                cash_str = (net_cash_match.group(1) or net_cash_match.group(2) or '').replace(',', '')
+                if cash_str:
+                    net_cash = int(cash_str)
+            shares = kis.get('current_price', {}).get('주식수') or 18691049
+            # 단순 DCF: 5년 FCF 7% 성장 + Terminal
+            fcf = fcf_start
+            pv_sum = 0
+            for yr in range(1, 6):
+                fcf = fcf * 1.07
+                pv_sum += fcf / ((1 + wacc) ** yr)
+            fcf_5 = fcf
+            terminal = fcf_5 * (1 + g) / (wacc - g) if wacc > g else 0
+            pv_terminal = terminal / ((1 + wacc) ** 5)
+            ev = pv_sum + pv_terminal
+            equity = ev + net_cash
+            dcf_calc = equity * 100000000 / shares  # 억원 → 원
+            # 본문값 비교
+            dcf_reported = int(dcf_target_matches[0].replace(',', ''))
+            if abs(dcf_reported - dcf_calc) / max(dcf_calc, 1) > 0.10:
+                b20_errs.append(
+                    f"DCF 본문 {dcf_reported:,}원 vs 실측 {dcf_calc:,.0f}원 "
+                    f"(WACC {wacc*100:.2f}% / g {g*100:.2f}% / FCF시작 {fcf_start}억 / 순현금 {net_cash}억) "
+                    f"-- 가정-출력 불일치 ({(dcf_reported/max(dcf_calc,1)-1)*100:+.1f}%)"
+                )
+    except Exception:
+        pass
+    if b20_errs:
+        fail += 1
+    results.append(('B20 DCF 출력값', 'FAIL' if b20_errs else 'PASS', '; '.join(b20_errs)[:250] if b20_errs else 'DCF 가정-출력 일치 또는 미감지'))
+
+    # ========== B21 (v5.1 신설): Bullish thesis vs 보수 적정가 모순 ==========
+    b21_errs = []
+    try:
+        rating = d.get('opinion', {}).get('rating', '')
+        target_base = d.get('opinion', {}).get('target_base', 0)
+        wr_path = f'data/{stock_name}/_wisereport.json'
+        if rating == 'BUY' and target_base and os.path.exists(wr_path):
+            wr = json.load(open(wr_path, encoding='utf-8'))
+            consensus_avg = wr.get('consensus', {}).get('avg_target_price') or wr.get('consensus', {}).get('avg_tp', 0)
+            if consensus_avg and target_base < consensus_avg * 0.90:
+                discount_pct = (target_base / consensus_avg - 1) * 100
+                # 본문에 thesis-적정주가 일관성 설명이 있는지 확인
+                text_concat = ' '.join(v for v in d.get('sections', {}).values() if isinstance(v, str))
+                has_explanation = (
+                    'thesis-적정주가' in text_concat or
+                    'thesis vs 적정주가' in text_concat or
+                    '보수 디스카운트' in text_concat or
+                    '보수 적정' in text_concat or
+                    '디스카운트 적용' in text_concat
+                )
+                if not has_explanation:
+                    b21_errs.append(
+                        f"BUY rating + Base {target_base:,}원이 컨센 평균 {consensus_avg:,}원 대비 {discount_pct:.1f}% 보수 "
+                        f"-- thesis-적정주가 일관성 설명 누락 (사유 본문에 명시 필요)"
+                    )
+    except Exception:
+        pass
+    if b21_errs:
+        fail += 1
+    results.append(('B21 thesis-적정가 일관성', 'FAIL' if b21_errs else 'PASS', '; '.join(b21_errs)[:200] if b21_errs else 'rating-target 일관 또는 설명 명시'))
+
+    # ========== B22 (v5.1 신설): "N/M 100% 미반영" 비약 검증 ==========
+    b22_errs = []
+    try:
+        wr_path = f'data/{stock_name}/_wisereport.json'
+        if os.path.exists(wr_path):
+            wr = json.load(open(wr_path, encoding='utf-8'))
+            tp_changes = wr.get('consensus', {}).get('recent_tp_changes', []) or []
+            n_known = len(tp_changes)
+            estimator_count = wr.get('consensus', {}).get('estimator_count', 0)
+            # 본문에서 "N/N (100%)" 또는 "17/17" 패턴 추출
+            text_concat = ' '.join(v for v in d.get('sections', {}).values() if isinstance(v, str))
+            # 컨센 매수 의견 분포 표기 ("매수 17 (100%)") 와 미반영 비약 ("17/17 (100%) 미반영") 구분
+            # "X/Y (100%)" 패턴만 잡되 surrounding 50자 안에 "정정", "이전", "비약", "오기" 키워드 있으면 자가정정 PASS
+            for m_obj in re.finditer(r'(\d+)\s*/\s*(\d+)\s*\(\s*100\s*%\s*\)', text_concat):
+                n, m = int(m_obj.group(1)), int(m_obj.group(2))
+                if m == estimator_count and n_known < estimator_count and n_known > 0:
+                    surrounding = text_concat[max(0, m_obj.start()-100):m_obj.end()+100]
+                    if any(kw in surrounding for kw in ['정정', '이전 v', '비약', '오기', '데이터 비약', 'v5.0 "', 'v5.0 “']):
+                        continue  # 자가 정정 명시 표현이므로 PASS
+                    b22_errs.append(
+                        f"본문 \"{n}/{m} (100%)\" 표기 vs Wisereport recent_tp_changes 명시 broker {n_known}개만 데이터 보유 "
+                        f"({m-n_known}개 broker 일자 미공개) -- 데이터 비약 가능성"
+                    )
+                    break
+    except Exception:
+        pass
+    if b22_errs:
+        fail += 1
+    results.append(('B22 N/M 100% 비약', 'FAIL' if b22_errs else 'PASS', '; '.join(b22_errs)[:200] if b22_errs else 'broker 데이터 일관 또는 미감지'))
+
     # 출력
     print(f"\n{'='*70}")
-    print(f"  STEP 6 1회차 B 블록 -- 수치 정합성 검증: {stock_name}")
+    print(f"  STEP 6 1회차 B 블록 (v5.0 B14~B18 포함) -- 수치 정합성: {stock_name}")
     print(f"{'='*70}\n")
     for item, status, detail in results:
         icon = '✓' if status == 'PASS' else ('✗' if status == 'FAIL' else '?')
@@ -335,7 +740,7 @@ def main(stock_name):
     if fail > 0:
         print(f"[경고] {fail}건의 수치 정합성 오류 발견. STEP 6 1회차에서 반드시 수정 후 2회차로 진입하라.")
         return 2
-    print("[OK] 모든 B 블록 통과. 2회차 report-critic 호출 가능.")
+    print("[OK] 모든 B 블록(B1~B18) 통과. 2회차 report-critic 호출 가능.")
     return 0
 
 

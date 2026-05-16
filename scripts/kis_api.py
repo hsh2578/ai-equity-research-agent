@@ -14,12 +14,40 @@ import sys
 from datetime import datetime, timedelta
 
 # ============================================
-# API 설정
+# API 설정 -- .env 자동 로드 (프로젝트 → 상위 → 상위상위 순으로 탐색)
 # ============================================
 import os
+from pathlib import Path
+
+def _load_env_auto():
+    """프로젝트 .env → 상위 폴더 .env 순으로 우선 로드 (이미 설정된 환경변수는 유지)"""
+    here = Path(__file__).resolve().parent
+    candidates = [
+        here.parent / '.env',                # 프로젝트 루트 (주식 ai 리서치 리포트 에이전트/.env)
+        here.parent.parent / '.env',         # 상위 폴더 (vibecoding/.env)
+        here.parent.parent.parent / '.env',  # 상위상위
+    ]
+    for env_path in candidates:
+        if not env_path.exists():
+            continue
+        try:
+            for line in env_path.read_text(encoding='utf-8').splitlines():
+                line = line.strip()
+                if not line or line.startswith('#') or '=' not in line:
+                    continue
+                k, v = line.split('=', 1)
+                k, v = k.strip(), v.strip().strip('"').strip("'")
+                # 이미 shell 에서 export 된 값이 있으면 덮어쓰지 않음 (shell 우선)
+                if k and v and k not in os.environ:
+                    os.environ[k] = v
+        except Exception:
+            pass
+
+_load_env_auto()
+
 KIS_APP_KEY = os.environ.get("KIS_APP_KEY", "")
 KIS_APP_SECRET = os.environ.get("KIS_APP_SECRET", "")
-KIS_BASE_URL = os.environ.get("KIS_BASE_URL", "https://openapivts.koreainvestment.com:29443")
+KIS_BASE_URL = os.environ.get("KIS_BASE_URL", "https://openapi.koreainvestment.com:9443")
 if not (KIS_APP_KEY and KIS_APP_SECRET):
     print("[WARN] KIS_APP_KEY / KIS_APP_SECRET 환경변수가 설정되지 않았습니다. 한국투자증권 OpenAPI 발급 후 설정하세요.", file=sys.stderr)
 

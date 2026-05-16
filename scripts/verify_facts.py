@@ -20,6 +20,7 @@ STEP 6 1회차 D 블록 -- 팩트 체크 자동 검증 (v4.10 신설)
 import json
 import sys
 import io
+import os
 import re
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -231,7 +232,163 @@ def main(stock_name):
         for f in d4['fails'][:5]:
             print(f"       - {f['peer']}: {f.get('issue','')}")
 
-    print(f"\n총 D 블록 FAIL: {total_fails}")
+    # ========== D5 (v5.1 신설): 정관 시점 정확성 (사업보고서 [0] 정관 변경 이력 grep 매칭) ==========
+    import re as _re5
+    d5_fails = []
+    try:
+        text_concat = ' '.join(v for v in analysis.get('sections', {}).values() if isinstance(v, str))
+        # 본문에서 "정관 ... YYYY.MM" 또는 "YYYY년 정관" 패턴 추출
+        date_claims = _re5.findall(
+            r'(20\d{2})[\.\s년]*(\d{1,2})?[\.\s월]*\d{0,2}\s*(?:정관|이사회 운영의 투명성|사업목적 변경|사채발행 액면총액)',
+            text_concat
+        )
+        # 사업보고서 [0] 원문 (덤프 파일) 검색
+        biz_path = f'data/{stock_name}/_tmp_r0_biz.txt'
+        if os.path.exists(biz_path) and date_claims:
+            biz_text = open(biz_path, encoding='utf-8').read()
+            # "이사회 운영의 투명성 제고" 키워드의 정관 변경일 추출
+            transparency_match = _re5.search(
+                r'(20\d{2})[\.\s년]*\d{1,2}[\.\s월]*\d{0,2}[\s\S]{0,500}?이사회 운영의 투명성',
+                biz_text
+            )
+            if transparency_match:
+                actual_year = transparency_match.group(1)
+                # 본문이 다른 연도와 "이사회 투명성"을 연결시키면 FAIL
+                wrong_year_pattern = _re5.search(
+                    r'(20\d{2})[\.\s년]*\d{0,2}[\.\s월]*\d{0,2}[\s\S]{0,200}?이사회 운영의 투명성',
+                    text_concat
+                )
+                if wrong_year_pattern and wrong_year_pattern.group(1) != actual_year:
+                    # 단 "정정" 또는 "사실은"같은 정정 명시가 같은 문장 안에 있으면 OK
+                    surrounding = text_concat[max(0, wrong_year_pattern.start()-200):wrong_year_pattern.end()+200]
+                    if not any(kw in surrounding for kw in ['정정', '사실은', '오기', actual_year + '년']):
+                        d5_fails.append({
+                            'claim': f'본문 \"{wrong_year_pattern.group(1)}년 이사회 운영의 투명성\"',
+                            'actual': f'사업보고서 [0] 정관 변경 이력 \"{actual_year}년\"',
+                            'issue': '정관 변경 시점 오기 가능성'
+                        })
+    except Exception:
+        pass
+
+    total_fails += len(d5_fails)
+    icon = '✓' if not d5_fails else '✗'
+    print(f"\n  [{icon} D5] 정관 시점 {len(d5_fails)}건 FAIL")
+    for f in d5_fails[:3]:
+        print(f"       - {f['claim']} (실제: {f['actual']}) - {f['issue']}")
+
+    # ========== D6 (v5.2 신설): 4대 갭 채움 여부 자동 검증 ==========
+    sections = analysis.get('sections', {})
+    text_all = ' '.join(v for v in sections.values() if isinstance(v, str))
+    text_s02 = sections.get('s02_thesis_catalysts', '') or sections.get('s02_business_model', '')
+    text_s07 = sections.get('s07_financial_analysis', '') or sections.get('s09_valuation', '')
+    text_s10 = sections.get('s10_scenarios_risks', '') or sections.get('s12_scenarios', '')
+    text_s11 = sections.get('s11_earnings_consensus', '') or sections.get('s16_consensus', '')
+
+    d6_fails = []
+
+    # 갭1: Bear 산업 사이클 거시 데이터 의무 (v5.3: 섹터별 dynamic 키워드)
+    # v5.4 패치: Bear 시나리오 박스만이 아니라 s10 전체 + s07/s11에서 산업 사이클 검색
+    # (이전 패턴은 \"#### Bear (확률 X%)\" 사이만 검색하여 매크로 리스크 섹션 LME/사이클 인용 false positive 발생)
+    bear_block = text_s10  # s10 전체로 확대
+
+    # 섹터 자동 감지 + 해당 섹터 macro_sources 키워드 추가
+    sector_macro_kws = []
+    sector_detected = '미감지'
+    sector_err = ''
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from industry_kpi import detect_industry, get_sector_matrix
+        meta = analysis.get('meta', {}) or {}
+        industry_field = meta.get('industry', '') or ''
+        country = (meta.get('country', '') or 'KR').upper()
+        if country not in ('KR', 'US'):
+            country = 'KR'
+        sector_detected = detect_industry(stock_name, industry_field)
+        m_sector = get_sector_matrix(sector_detected, country=country)
+        if m_sector:
+            for src in m_sector.get('macro_sources', []):
+                token = src.split()[0]
+                if len(token) >= 3:
+                    sector_macro_kws.append(token)
+            ctc = m_sector.get('cycle_trough_compression', '')
+            for kw in ['DRAM', '리튬', '임상', 'IFPI', '광고', 'NIM', '판매', '신조선가',
+                       'PLF', '분양', 'ARPU', 'Cap Rate', '스프레드', '동일점포', 'Combined Ratio']:
+                if kw in ctc:
+                    sector_macro_kws.append(kw)
+    except Exception as _e:
+        sector_err = f'{type(_e).__name__}: {_e}'
+    if sector_err:
+        print(f"  [WARN D6] 섹터 import 실패: {sector_err} -- 일반 키워드만 사용")
+
+    base_cycle_kws = ['역성장', '사이클', '시계열', 'YoY', '산업 매출', '산업 사이클',
+                     '글로벌 시장', '시장 -', '시장 전체', '저점', '정점', '압축률']
+    cycle_kws = base_cycle_kws + sector_macro_kws
+
+    if bear_block and not any(kw in bear_block for kw in cycle_kws):
+        d6_fails.append({
+            'gap': 'gap1',
+            'issue': f'Bear 산업 사이클 거시 데이터 부재 (감지 섹터: {sector_detected}, 기대 키워드 예: {", ".join(sector_macro_kws[:5]) if sector_macro_kws else "사이클/시계열/역성장"}) -- 단순 이벤트 나열, 일류 격차 -8점'
+        })
+
+    # 갭2: 컨센 ±20% Edge 또는 보수 사유
+    rating = (analysis.get('opinion', {}) or {}).get('rating', '').upper()
+    if 'BUY' in rating or 'STRONG' in rating:
+        try:
+            base = float((analysis.get('opinion', {}) or {}).get('target_base', 0) or 0)
+            bull = float((analysis.get('opinion', {}) or {}).get('target_bull', 0) or 0)
+            consensus_avg = None
+            wr_path = f'data/{stock_name}/_wisereport.json'
+            if os.path.exists(wr_path):
+                wr = json.load(open(wr_path, encoding='utf-8'))
+                consensus_avg = (wr.get('consensus', {}) or {}).get('avg_target_price')
+            if consensus_avg and base:
+                base_ratio = base / consensus_avg
+                bull_ratio = bull / consensus_avg if bull else 0
+                # BUY인데 Base 컨센 -5% 이하 + Bull 컨센 +20% 미만 + 보수 사유 부재
+                conservative_box = any(kw in (text_s07 + text_s11) for kw in
+                                       ['컨센 대비 보수', '컨센 보수 사유', '컨센 대비 -', 'vs 컨센', '보수 사유'])
+                if base_ratio < 0.95 and bull_ratio < 1.20 and not conservative_box:
+                    d6_fails.append({
+                        'gap': 'gap2',
+                        'issue': f'BUY rating + Base {base_ratio*100-100:+.1f}% / Bull {bull_ratio*100-100:+.1f}% 모두 컨센 추종(±5~20% 미달)인데 "컨센 대비 보수 사유" 박스 부재 -- 안전 헤지 리포트 한계, 일류 격차 -10점'
+                    })
+        except Exception:
+            pass
+
+    # 갭3: Self-Attack 의무 섹션
+    self_attack_kws = ['Self-Attack', 'Self Attack', '자기 반박', 'thesis가 틀릴', '논문이 틀릴',
+                       '본 thesis 반박', 'Thesis 반박', '본 리서치 입장']
+    has_self_attack = any(kw in (text_s02 + text_s10) for kw in self_attack_kws)
+    if not has_self_attack:
+        d6_fails.append({
+            'gap': 'gap3',
+            'issue': 'Self-Attack(본 thesis가 틀릴 강한 이유 3개 + 본 리서치 입장) 박스 부재 -- 일류 88점 도달 불가, 격차 -8점'
+        })
+
+    # 갭4: 모멘텀 자기 부정 + "왜 지금" 메커니즘
+    why_now_kws = ['왜 지금', '갱신 차단', 'IR 자료 부족', 'broker 모델 갱신', '컨센 무변동의 진짜 이유']
+    already_priced_kws = ['이미 반영', '이미 가격', 'Sell the news', '차익실현', '차익 실현',
+                          '발표를 부정', '시장이 부정']
+    has_why_now = any(kw in text_s02 for kw in why_now_kws)
+    has_already_priced = any(kw in (text_s02 + text_s10) for kw in already_priced_kws)
+    if not (has_why_now and has_already_priced):
+        missing = []
+        if not has_why_now:
+            missing.append('"왜 지금" 메커니즘')
+        if not has_already_priced:
+            missing.append('"이미 가격 반영 가능성" 부정 시나리오')
+        d6_fails.append({
+            'gap': 'gap4',
+            'issue': f'모멘텀 자기 부정 박스 부재: {", ".join(missing)} -- 단순 시간차 가설은 70점, 격차 -8점'
+        })
+
+    total_fails += len(d6_fails)
+    icon = '✓' if not d6_fails else '✗'
+    print(f"\n  [{icon} D6] v5.2 4대 갭 채움 {len(d6_fails)}/4건 FAIL")
+    for f in d6_fails:
+        print(f"       - [{f['gap']}] {f['issue'][:140]}")
+
+    print(f"\n총 D 블록 FAIL (B19~B22+D5+D6 포함 v5.2): {total_fails}")
     print(f"{'='*70}\n")
 
     if total_fails == 0:

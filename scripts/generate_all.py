@@ -1,5 +1,5 @@
 """
-범용 리포트 생성기 (v3 — 단일 상세 PDF, Navy/Gold 디자인)
+범용 리포트 생성기 (v3 -- 단일 상세 PDF, Navy/Gold 디자인)
 
 analysis.json → output/{종목}/report_{종목}_상세.pdf
   - HTML → PDF (Playwright Chromium)
@@ -19,6 +19,9 @@ analysis.json → output/{종목}/report_{종목}_상세.pdf
 
 import json
 import sys
+import io as _io_utf8
+sys.stdout = _io_utf8.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stderr = _io_utf8.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 import os
 import re
 import html as html_lib
@@ -2316,6 +2319,10 @@ def _md_to_html_blocks(md_text):
     i = 0
     n = len(lines)
 
+    # v5.0 풀 재설계: 섹션마다 ### h3 카운터 reset
+    # nonlocal 사용 위해 closure 형태 -- 함수 내부 변수로 전환
+    h3_counter = [0]  # mutable container for closure
+
     def render_inline(text):
         """Inline emphasis: **bold**, *italic*, `code`."""
         # Escape HTML first
@@ -2390,6 +2397,11 @@ def _md_to_html_blocks(md_text):
             if level <= 2:
                 html_parts.append(f'<h3 class="md-h2">{text}</h3>')
             elif level == 3:
+                # v5.4 패치 (호텔신라 공백 사고 후): h3 카운터 강제 분할 비활성화
+                # → 큰 섹션은 chromium 자동 분할에 맡김. h3는 break-inside: avoid만 적용.
+                # 강제 page-break-before는 .section-block (섹션 단위)만 적용하고
+                # 섹션 내부는 자연 흐름으로 페이지 채움 효율 극대화
+                h3_counter[0] += 1
                 html_parts.append(f'<h4 class="md-h3">{text}</h4>')
             else:
                 html_parts.append(f'<h5 class="md-h4">{text}</h5>')
@@ -2518,14 +2530,31 @@ _DETAILED_V3_CSS = r"""
   .content-flow {}
 
   .section-block {
+    /* v5.4 -- 12섹션 깊은 분량 (섹션당 3,000~5,500자) 대응:
+       각 섹션 새 페이지 시작 + 표/박스 분할 보호 */
+    page-break-before: always;
+    break-before: page;
+    page-break-inside: auto;
     margin-top: 0;
     margin-bottom: 5mm;
     padding-bottom: 3mm;
     border-bottom: 1px solid #edf0f4;
   }
+  .section-block:first-of-type {
+    /* 첫 섹션은 Executive Summary 다음 자연 흐름 */
+    page-break-before: auto;
+    break-before: auto;
+  }
   .section-block:last-child {
     border-bottom: none;
     margin-bottom: 0;
+  }
+  /* 표/인용 박스/code block 분할 방지 (가독성 보호) */
+  .section-block table,
+  .section-block blockquote,
+  .section-block pre {
+    page-break-inside: avoid;
+    break-inside: avoid;
   }
   .section-block .section-caption {
     margin-top: 0;
@@ -2543,11 +2572,62 @@ _DETAILED_V3_CSS = r"""
   .section-block .section-body > *:last-child {
     margin-bottom: 0;
   }
+  /* v5.0 12섹션 깊은 분량 (s02 5,500자+) 자동 분할 -- h3 sub-header에서 break 가능 */
+  .section-block .section-body h3 {
+    page-break-after: avoid;
+    break-after: avoid;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    margin-top: 5mm;
+    margin-bottom: 2mm;
+    font-size: 12pt;
+    line-height: 1.3;
+    color: #0b2545;
+  }
+  /* v5.0 풀 재설계: 한 섹션 내 3번째 h3부터 자동 새 페이지 (큰 섹션 압축 차단) */
+  .section-block .section-body h3:nth-of-type(n+3) {
+    page-break-before: always;
+    break-before: page;
+    margin-top: 0;
+  }
+  /* h3 + 다음 콘텐츠 (table/p/ul) 묶음 */
+  .section-block .section-body h3 + table,
+  .section-block .section-body h3 + p,
+  .section-block .section-body h3 + ul,
+  .section-block .section-body h3 + ol,
+  .section-block .section-body h3 + blockquote {
+    page-break-before: avoid;
+    break-before: avoid;
+  }
+  .section-block .section-body h4 {
+    page-break-after: avoid;
+    break-after: avoid;
+    margin-top: 3mm;
+    margin-bottom: 1.5mm;
+    font-size: 10.5pt;
+    color: #1a3553;
+  }
+  /* 본문 텍스트 v5.0 깊이 대응 -- 가독성 우선 */
+  .section-block .section-body {
+    font-size: 9.5pt;
+    line-height: 1.55;
+  }
+  .section-block .section-body p {
+    margin: 1.5mm 0;
+  }
+  .section-block .section-body ul,
+  .section-block .section-body ol {
+    margin: 1.5mm 0;
+    padding-left: 5mm;
+  }
+  .section-block .section-body li {
+    margin: 0.5mm 0;
+  }
 
   /* Avoid orphans/widows + table integrity */
   p { orphans: 2; widows: 2; margin: 1mm 0; }
-  table.nyt { page-break-inside: avoid; break-inside: avoid; }
-  blockquote.md-quote { page-break-inside: avoid; }
+  table.nyt { page-break-inside: avoid; break-inside: avoid; max-width: 100%; }
+  blockquote.md-quote { page-break-inside: avoid; break-inside: avoid; }
 
   /* ---------- Cover absolute children — coordinates inside the 174x269 box ---------- */
   .full-bleed.cover .accent-corner {
@@ -2563,9 +2643,11 @@ _DETAILED_V3_CSS = r"""
   .full-bleed.cover .pick-box {
     left: 14mm;
     right: 14mm;
-    bottom: 8mm;
-    padding: 2.5mm 5mm !important;
-    min-height: 18mm;
+    bottom: 10mm;
+    padding: 1.5mm 5mm !important;
+    min-height: 22mm;
+    max-height: 32mm;
+    overflow: hidden;
   }
   .full-bleed.cover .cover-footer {
     left: 14mm;
@@ -2575,17 +2657,18 @@ _DETAILED_V3_CSS = r"""
     font-size: 5.5pt;
   }
   .full-bleed.cover .cover-body {
-    margin-top: 12mm;
+    margin-top: 10mm;
     position: relative;
     z-index: 1;
   }
   .full-bleed.cover h1.stock-title {
-    font-size: 40pt;
-    margin: 3mm 0 2mm 0;
+    font-size: 36pt;
+    margin: 2mm 0 1.5mm 0;
+    line-height: 1.05;
   }
   .full-bleed.cover .tagline {
-    margin-top: 4mm;
-    font-size: 14pt;
+    margin-top: 3mm;
+    font-size: 12pt;
     line-height: 1.25;
     max-width: 130mm;
   }
@@ -2600,12 +2683,14 @@ _DETAILED_V3_CSS = r"""
     background: rgba(0,0,0,0.22);
     border-top: 0.8px solid rgba(184,146,46,0.7);
     border-bottom: 0.8px solid rgba(184,146,46,0.7);
-    padding: 2.5mm 4mm;
+    padding: 2mm 4mm;
+    max-height: 30mm;
+    overflow: hidden;
   }
   .full-bleed.cover .dash-block {
     padding: 0;
-    font-size: 6.8pt;
-    line-height: 1.35;
+    font-size: 6.2pt;
+    line-height: 1.25;
   }
   .full-bleed.cover .dash-title {
     color: #b8922e;
@@ -2649,18 +2734,28 @@ _DETAILED_V3_CSS = r"""
   }
   .full-bleed.cover .target-cell .t-val {
     font-family: var(--font-heading);
-    font-size: 12pt;
+    font-size: 9.5pt;
     font-weight: 400;
     color: #e0e6f0;
     margin-top: 0.3mm;
     font-variant-numeric: tabular-nums;
     line-height: 1.1;
+    white-space: nowrap;
   }
   .full-bleed.cover .target-cell.base .t-val {
-    font-size: 16pt;
+    font-size: 12pt;
     color: #ffffff;
     font-weight: 500;
+    white-space: nowrap;
   }
+  .full-bleed.cover .pick-badge {
+    font-size: 11pt !important;
+    line-height: 1.15 !important;
+    padding: 1.5mm 4mm !important;
+    white-space: normal !important;
+    letter-spacing: 0.5px !important;
+  }
+  .full-bleed.cover .dash-row { white-space: nowrap; }
   .full-bleed.cover .target-cell.base .t-lbl { color: #b8922e; }
   .full-bleed.cover .target-cell.bear .t-val { color: #e2a5a5; }
   .full-bleed.cover .target-cell.bull .t-val { color: #86c7a5; }
@@ -3106,7 +3201,7 @@ _DETAILED_V3_CSS = r"""
 """
 
 
-_SECTION_TITLES_DETAILED = [
+_SECTION_TITLES_DETAILED_V4 = [
     ("s01_opinion",            "01", "Investment Opinion",       "투자의견 & 목표주가"),
     ("s02_investment_points",  "02", "Investment Thesis",        "투자 포인트"),
     ("s03_company_overview",   "03", "Company Overview",         "회사 개요 & 비즈니스 모델"),
@@ -3129,6 +3224,40 @@ _SECTION_TITLES_DETAILED = [
     ("s20_action_plan",        "20", "Action Plan",              "실행 계획"),
     ("s21_reliability",        "21", "Reliability",              "분석 신뢰도 & 한계"),
 ]
+
+# v5.0 12섹션 (CFA 표준 통합 + ESG 신설)
+_SECTION_TITLES_DETAILED_V5 = [
+    ("s01_opinion_thesis",        "01", "Opinion & Thesis",         "투자의견 & 한 줄 투자 논문"),
+    ("s02_thesis_catalysts",      "02", "Thesis & Catalysts",       "투자포인트 & 카탈리스트"),
+    ("s03_company_overview",      "03", "Company Analysis",         "기업 분석"),
+    ("s04_industry_competition",  "04", "Industry & Competition",   "산업 분석 & 경쟁 구도"),
+    ("s05_management_fieldcheck", "05", "Management & Field Check", "경영진 & 현장 검증"),
+    ("s06_financial",             "06", "Financial Analysis",       "재무 분석"),
+    ("s07_valuation",             "07", "Valuation",                "밸류에이션"),
+    ("s08_esg",                   "08", "ESG",                      "ESG 분석"),
+    ("s09_scenarios_risks",       "09", "Scenarios & Risks",        "시나리오 & 리스크"),
+    ("s10_earnings_consensus",    "10", "Earnings & Consensus",     "실적 · 컨센"),
+    ("s11_supply_shareholder",    "11", "Supply & Shareholder",     "수급 & 주주환원"),
+    ("s12_action_plan",           "12", "Action Plan",              "실행 계획 & Exit"),
+]
+
+
+def _detect_version(sections: dict) -> str:
+    """v5.0 12섹션 또는 v4 21섹션 자동 감지."""
+    v5_keys = {"s01_opinion_thesis", "s02_thesis_catalysts", "s06_financial", "s12_action_plan"}
+    if any(k in sections for k in v5_keys):
+        return "v5"
+    return "v4"
+
+
+def _get_section_titles(data) -> list:
+    """v5.0이면 12섹션, v4면 21섹션 목차 반환."""
+    sections = data.get("sections", {}) if isinstance(data, dict) else {}
+    return _SECTION_TITLES_DETAILED_V5 if _detect_version(sections) == "v5" else _SECTION_TITLES_DETAILED_V4
+
+
+# 하위 호환: 기존 코드가 _SECTION_TITLES_DETAILED 참조 시 v4 사용
+_SECTION_TITLES_DETAILED = _SECTION_TITLES_DETAILED_V4
 
 
 def _generate_detailed_v3(data, output_dir):
@@ -3263,7 +3392,15 @@ def _generate_detailed_v3(data, output_dir):
 
     # Consensus Data (재무 테이블에서 실적/추정 년도 2개 발췌)
     fin_headers_c = fin.get("headers", [])
-    fin_rows_c = fin.get("rows", [])
+    fin_rows_raw = fin.get("rows", [])
+    # v5: dict ({"매출(조)": [...], ...}) / v4: list of list ([["매출", ...], ...]) 양쪽 모두 지원
+    if isinstance(fin_rows_raw, dict):
+        fin_rows_c = [[k] + list(v) for k, v in fin_rows_raw.items()]
+        # dict에서는 헤더에 "항목" 빠질 수 있으므로 보정
+        if fin_headers_c and len(fin_headers_c) == len(list(fin_rows_raw.values())[0]):
+            fin_headers_c = ["항목"] + list(fin_headers_c)
+    else:
+        fin_rows_c = fin_rows_raw
     cons_rows_html = ''
     if fin_headers_c and fin_rows_c:
         last_actual = len(fin_headers_c) - 1
@@ -3281,10 +3418,15 @@ def _generate_detailed_v3(data, output_dir):
         y_act = str(fin_headers_c[last_actual]) if last_actual < len(fin_headers_c) else ""
         y_fwd = str(fin_headers_c[fwd_idx]) if fwd_idx < len(fin_headers_c) else ""
 
-        rev_header = str(fin_headers_c[0]) if fin_headers_c else ""
+        # 단위 추출: row label 첫 번째 (예: "매출(조)") 또는 헤더
         unit_match = ""
-        if "조" in rev_header: unit_match = "조원"
-        elif "억" in rev_header: unit_match = "억원"
+        for r in fin_rows_c:
+            if r and "매출" in str(r[0]):
+                lbl0 = str(r[0])
+                if "(조)" in lbl0 or "조" in lbl0:
+                    unit_match = "조원"; break
+                if "(억)" in lbl0 or "억" in lbl0:
+                    unit_match = "억원"; break
 
         subtitle = f'<div style="font-size:6.5pt; color:#8593aa; letter-spacing:1.5px; margin-bottom:1.5mm; text-align:center;">{html_lib.escape(y_act)} 실적 &nbsp;→&nbsp; {html_lib.escape(y_fwd)} 추정 <span style="color:#b8922e;">({unit_match})</span></div>' if unit_match else ''
 
@@ -3395,7 +3537,8 @@ def _generate_detailed_v3(data, output_dir):
     bull_cls = "pos" if up_bull > 0 else "neg"
 
     toc_items_html = ''
-    for idx, (key, num, en, ko) in enumerate(_SECTION_TITLES_DETAILED, start=1):
+    _section_titles = _get_section_titles(data)
+    for idx, (key, num, en, ko) in enumerate(_section_titles, start=1):
         toc_items_html += (
             f'<div class="toc-item">'
             f'<span class="num">{num}</span>'
@@ -3475,7 +3618,7 @@ def _generate_detailed_v3(data, output_dir):
 
   <div class="section-caption">— TABLE OF CONTENTS —</div>
   <h2 class="section-heading">목차</h2>
-  <div class="section-intro">본 리서치 노트는 21개 섹션으로 구성되며, 각 섹션은 독립적으로 읽을 수 있도록 설계되었다. 권장 독서 순서: 01 → 02 → 09 → 12 → 13.</div>
+  <div class="section-intro">본 리서치 노트는 {len(_section_titles)}개 섹션으로 구성되며, 각 섹션은 독립적으로 읽을 수 있도록 설계되었다. 권장 독서 순서: {'01 → 02 → 07 → 08 → 10 → 12' if len(_section_titles) == 12 else '01 → 02 → 09 → 12 → 13'}.</div>
 
   <div class="toc toc-full">{toc_items_html}</div>
 
@@ -3492,7 +3635,7 @@ def _generate_detailed_v3(data, output_dir):
     # page breaks automatically based on content height + break-inside hints.
     # =====================================================================
     section_blocks_html = '<div class="content-flow">\n'
-    for idx, (key, num, en, ko) in enumerate(_SECTION_TITLES_DETAILED, start=1):
+    for idx, (key, num, en, ko) in enumerate(_section_titles, start=1):
         body_md = sections.get(key, "")
         body_html = _md_to_html_blocks(body_md)
         if not body_html:
@@ -3909,6 +4052,37 @@ def main():
     warnings = []
     errors = []
     sections = data.get("sections", {})
+
+    # ============================================
+    # v5.0 → v4.21 sections key fallback (v5.0 12섹션 → v4.21 21섹션 매핑)
+    # v5.0 통합 섹션이 v4.21 21섹션 위치에 자동 표시되도록
+    # ============================================
+    _V5_TO_V4_FALLBACK = {
+        # v5.0 새 키 → 매핑할 v4 키들 (한 v5 키가 여러 v4 위치에 표시될 수 있음)
+        's01_opinion_thesis': ['s01_opinion', 's13_thesis'],
+        's02_thesis_catalysts': ['s02_investment_points', 's11_catalysts'],
+        's05_competitive_moat': ['s05_competition', 's06_moat'],
+        's06_management_fieldcheck': ['s07_management'],
+        's07_financial_analysis': ['s08_financial'],
+        's08_valuation': ['s09_valuation'],
+        's10_scenarios_risks': ['s10_macro', 's12_scenarios', 's14_short_thesis'],
+        's11_earnings_consensus': ['s15_beat_miss', 's16_consensus', 's17_supply', 's18_shareholder_return'],
+        's12_action_plan': ['s19_trust_worry_watch', 's20_action_plan', 's21_reliability'],
+    }
+    for v5k, v4_keys in _V5_TO_V4_FALLBACK.items():
+        if v5k in sections and sections[v5k]:
+            v5_content = sections[v5k]
+            # v5.0 키 자체는 그대로 보존 (analysis_to_md 등 다른 도구 호환)
+            # v4 위치 중 비어있는 곳에만 채우기 (v4 키가 이미 있으면 덮어쓰지 않음)
+            for v4k in v4_keys:
+                if not sections.get(v4k):
+                    sections[v4k] = v5_content
+    # ESG (s09_esg) 처리: v4에 대응 위치 없으므로 s10_macro 앞에 인라인 표시
+    if sections.get('s09_esg') and 's10_macro' in sections:
+        esg_content = sections['s09_esg']
+        macro_content = sections['s10_macro']
+        sections['s10_macro'] = esg_content + "\n\n---\n\n" + macro_content
+
     price = data.get("price", {})
     opinion = data.get("opinion", {})
     financials = data.get("financials", {})
