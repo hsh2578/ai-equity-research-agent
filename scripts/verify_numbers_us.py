@@ -29,6 +29,8 @@ import io
 import os
 import re
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 
@@ -506,6 +508,108 @@ def main(ticker):
             results.append(('B17 시총 본문 변종', 'PASS', f"시총 본문 {len(values)}곳, 고유값 {len(unique)}개"))
     else:
         results.append(('B17 시총 본문 변종', 'SKIP', f"본문 시총 라벨 매칭 {len(cap_hits)}건"))
+
+    # ========== B11 (v5.5 신설): 컨센서스 정합성 -- KR Wisereport B11 의 미국판 ==========
+    # 본문/analysis 의 Forward EPS/PER 이 yfinance 실측 컨센과 어긋나는 것을 차단.
+    # 삼성전자 v4.8 사고(구 리포트 캐시를 최신 컨센으로 오인)의 미국판 재발 방지.
+    cons_path = f'data/{ticker}/_us_consensus.json'
+    if not os.path.exists(cons_path):
+        results.append(('B11 컨센 정합', 'SKIP',
+                        f'{cons_path} 없음 (us_consensus.py 미실행) -- 컨센 추이 인용했다면 수동 확인'))
+    else:
+        cons = json.load(open(cons_path, encoding='utf-8'))
+        b11_errs = []
+        est = cons.get('eps_estimate', {})
+        dv = cons.get('derived', {})
+
+        # (1) forward_eps 정합
+        a_fwd_eps = ap.get('forward_eps')
+        c_fwd_eps = (est.get('+1y') or {}).get('avg') or dv.get('eps_+1y_current')
+        if a_fwd_eps and c_fwd_eps:
+            diff = abs(float(a_fwd_eps) - float(c_fwd_eps)) / float(c_fwd_eps) * 100
+            if diff > 10:
+                b11_errs.append(
+                    f"forward_eps {a_fwd_eps} vs 컨센 +1y {c_fwd_eps:.2f} (차이 {diff:.1f}%)")
+
+        # (2) forward_per 정합 (현재가 / 컨센 EPS 로 역산)
+        a_fwd_per = ap.get('forward_per')
+        a_price = ap.get('current')
+        if a_fwd_per and a_price and c_fwd_eps:
+            implied = float(a_price) / float(c_fwd_eps)
+            diff = abs(float(a_fwd_per) - implied) / implied * 100
+            if diff > 12:
+                b11_errs.append(
+                    f"forward_per {a_fwd_per} vs 현재가/컨센EPS 역산 {implied:.1f} (차이 {diff:.1f}%)")
+
+        # (3) 리비전 방향 vs 본문 서술 일관성
+        direction = dv.get('consensus_direction')
+        if direction in ('UP', 'DOWN'):
+            up_words = ['상향', '상향조정', '컨센 상향', '추정치 상향', '눈높이 상향']
+            down_words = ['하향', '하향조정', '컨센 하향', '추정치 하향', '눈높이 하향']
+            said_up = any(w in all_text for w in up_words)
+            said_down = any(w in all_text for w in down_words)
+            mom = dv.get('revision_+1y_90d_pct')
+            mom_s = f"{mom:+.1f}%" if mom is not None else "N/A"
+            if direction == 'UP' and said_down and not said_up:
+                b11_errs.append(
+                    f"컨센 90일 {mom_s} 상향인데 본문은 '하향'으로 서술")
+            elif direction == 'DOWN' and said_up and not said_down:
+                b11_errs.append(
+                    f"컨센 90일 {mom_s} 하향인데 본문은 '상향'으로 서술")
+
+        # (4) 목표가 sanity: Base 타겟이 컨센 최고가를 넘으면 근거 요구
+        pt = cons.get('price_targets', {})
+        a_base = (d.get('opinion') or {}).get('target_base')
+        if a_base and pt.get('high'):
+            try:
+                if float(a_base) > float(pt['high']) * 1.05:
+                    b11_errs.append(
+                        f"target_base ${a_base} > 컨센 최고 ${pt['high']:.0f} -- "
+                        f"컨센 상단 초과 근거를 s07 밸류에이션에 명시 필요")
+            except (TypeError, ValueError):
+                pass
+
+        status = 'FAIL' if b11_errs else 'PASS'
+        if b11_errs:
+            fail += 1
+        detail = '; '.join(b11_errs)[:220] if b11_errs else (
+            f"컨센 +1y EPS {c_fwd_eps:.2f} / 방향 {dv.get('consensus_direction')} / "
+            f"순리비전30d {dv.get('net_revisions_+1y_30d')}" if c_fwd_eps else '컨센 정합 OK')
+        results.append(('B11 컨센 정합', status, detail))
+
+    # ========== B13 (v5.5 신설): 분기 누락 (KR 과 동일 모듈 공용) ==========
+    # US 는 10-Q 가 YTD 누적이라 역산 과정에서 분기가 통째로 빠지기 쉽다.
+    from quarter_labels import check as _q_check
+    b13_errs, b13_detail = _q_check(d.get('quarterly', {}))
+    status = 'PASS' if not b13_errs else 'FAIL'
+    if b13_errs:
+        fail += 1
+    results.append(('B13 분기 누락', status,
+                    '; '.join(b13_errs)[:220] if b13_errs else b13_detail))
+
+    # ========== B19 (v5.5 신설): 밴드 유효성 게이트 ==========
+    # _per_band.json 의 per_band_valid=False 인데 본문이 "5년 평균 대비" 를 단정하면 차단.
+    band_path = f'data/{ticker}/_per_band.json'
+    if os.path.exists(band_path):
+        band = json.load(open(band_path, encoding='utf-8'))
+        b19_errs = []
+        band_claims = ['5년 평균', '역사적 평균', '5Y 평균', '밴드 상단', '밴드 하단', 'z-score', 'σ']
+        claimed = [w for w in band_claims if w in all_text]
+        if claimed and band.get('per_band_valid') is False:
+            b19_errs.append(
+                f"밴드 무효(변동계수 초과)인데 본문이 밴드 표현 사용: {claimed[:3]} -- "
+                f"연도별 PER 값을 직접 제시하는 서술로 교체 필요")
+        if band.get('per_band_valid') is None:
+            results.append(('B19 밴드 유효성', 'SKIP', '구버전 _per_band.json (fdr_band_us.py 재실행 권장)'))
+        else:
+            status = 'FAIL' if b19_errs else 'PASS'
+            if b19_errs:
+                fail += 1
+            results.append(('B19 밴드 유효성', status,
+                            '; '.join(b19_errs)[:200] if b19_errs
+                            else f"per_valid={band.get('per_band_valid')} / 밴드 표현 {len(claimed)}건"))
+    else:
+        results.append(('B19 밴드 유효성', 'SKIP', '_per_band.json 없음 (fdr_band_us.py 미실행)'))
 
     # 출력
     for name, status, detail in results:

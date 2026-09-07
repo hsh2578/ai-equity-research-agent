@@ -13,6 +13,8 @@ import io
 import os
 import re
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 
@@ -389,42 +391,18 @@ def main(stock_name):
          '; '.join(sotp_errs[:3])[:250] if sotp_errs else f'{len(list(pat1.finditer(target_text)) + list(pat2.finditer(target_text)) + list(pat3.finditer(target_text)))}개 산술 패턴 ±15% 이내')
     )
 
-    # B13. quarterly 분기 누락 + 합산 검산 (v4.20 신설 -- 에스엠 1Q25 누락 사고 재발 방지)
-    # 1Q25 NI 2,527억 일회성 효과 시각화 누락이 발생한 사고를 작성 시점에서 자동 차단.
-    quarterly = d.get('quarterly', {})
-    q_rows = quarterly.get('rows', [])
-    q_headers = quarterly.get('headers', [])
-    b13_errs = []
-    if q_rows:
-        # quarterly 첫 컬럼이 분기 라벨 (예: "1Q25", "2Q25" 등)
-        labels = [str(r[0]).strip() if r else '' for r in q_rows]
-        # 확정 분기만 추출 (E 포함된 추정치 제외)
-        confirmed = [l for l in labels if 'E' not in l.upper() and re.match(r'\d?Q\d{2}', l)]
-        # 같은 연도 분기 그룹화: "1Q25" "2Q25" → 25
-        from collections import defaultdict
-        years = defaultdict(set)
-        for l in confirmed:
-            m = re.match(r'(\d)Q(\d{2})', l)
-            if m:
-                years[m.group(2)].add(int(m.group(1)))
-        # 각 연도별 4개 분기 모두 있는지 확인 (가장 최근 확정 연도만)
-        if years:
-            latest_year = max(years.keys())
-            quarters_present = years[latest_year]
-            if len(quarters_present) < 4 and len(quarters_present) > 0:
-                missing = sorted(set([1, 2, 3, 4]) - quarters_present)
-                b13_errs.append(
-                    f"20{latest_year}년 분기 누락: {missing}Q 미기재. "
-                    f"일회성 효과 시각화를 위해 4개 분기 모두 표기 필요."
-                )
-    else:
-        b13_errs.append("quarterly 표 자체 부재")
+    # B13. quarterly 분기 누락 (v5.5 재작성 -- v4.20 원본은 죽어 있었다)
+    # 원본은 rows[i][0] 을 분기 라벨로 읽었으나 analysis.json 은 headers 에 분기가 온다.
+    # 정규식이 한 건도 매칭되지 않아 에러 리스트가 비었고 그대로 PASS 를 냈다
+    # (한국콜마/와이지엔터 모두 "확정 4분기 충족" 이라는 거짓 메시지로 통과).
+    # scripts/quarter_labels.py 로 이관 + tests/test_quarter_labels.py 로 검증한다.
+    from quarter_labels import check as _q_check
+    b13_errs, b13_detail = _q_check(d.get('quarterly', {}))
     status = 'PASS' if not b13_errs else 'FAIL'
     if b13_errs:
         fail += 1
-    results.append(
-        ('B13 분기 누락', status, '; '.join(b13_errs)[:200] if b13_errs else f'분기 행 {len(q_rows)}개 / 확정 4분기 충족')
-    )
+    results.append(('B13 분기 누락', status,
+                    '; '.join(b13_errs)[:220] if b13_errs else b13_detail))
 
     # ========== B14 (v5.0 신설): 잠정 vs 정정 OP 충돌 ==========
     b14_errs = []
