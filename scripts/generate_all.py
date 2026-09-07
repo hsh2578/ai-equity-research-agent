@@ -4223,6 +4223,11 @@ def main():
                 pname = p.get("name", "")
                 snap = None
                 for snap_name, snap_data in peer_snap.items():
+                    # 메타데이터 키(_collected_at 등)는 dict 가 아니다. 여기서 걸러내지 않으면
+                    # 아래에서 snap.get(...) 이 AttributeError 를 내고, 그 예외가 바깥 except 에
+                    # 잡혀 **Peer 검증 전체가 조용히 건너뛰어진다** (v5.5 방어 추가).
+                    if not isinstance(snap_data, dict):
+                        continue
                     if snap_name.lower().split()[0] in pname.lower() or pname.lower().split()[0] in snap_name.lower():
                         snap = snap_data
                         break

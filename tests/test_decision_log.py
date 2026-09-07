@@ -16,7 +16,7 @@ import shutil
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 
-from decision_log import DecisionLog, score, HOLD_BAND
+from decision_log import DecisionLog, score, HOLD_BAND, resolve_market, flag_value
 
 _passed = 0
 _failed = []
@@ -129,15 +129,50 @@ try:
     eq(score('BUY', None), 'N/A', "alpha 없으면 채점 제외")
     truthy(HOLD_BAND > 0, "HOLD 밴드 상수 존재")
 
+    # --- 9c. market 지속 (v5.5 리뷰: JYP/LS 를 미국 종목으로 오판) ---
+    # 초판은 정산 시점에 종목명 정규식 [A-Z.]{1,6} 으로 시장을 다시 추측했다.
+    # JYP(035900, KOSDAQ) / LS(006260, KOSPI) 가 US 로 분류돼
+    # yf.Ticker('LS') = Lands' End 의 주가로 alpha 를 계산하고도 에러 없이 기록됐다.
+    log.store_decision('LS', '2026-07-01', 'BUY', thesis='지주 재평가',
+                       price=180000, market='KR')
+    ls = [x for x in log.load_entries() if x['name'] == 'LS'][0]
+    eq(ls.get('market'), 'KR', "store_decision 이 market 을 로그에 남긴다")
+
+    log.update_with_outcome('LS', '2026-07-01', 0.10, 0.05, 60,
+                            resolution_date='2026-08-30', reflection='r')
+    ls2 = [x for x in log.load_entries() if x['name'] == 'LS'][0]
+    eq(ls2.get('market'), 'KR', "정산 후에도 market 이 보존된다")
+    eq(ls2['alpha'], '+5.0%', "정산 값이 정상 기록")
+
+    # 기록에 market 이 있으면 그것을 쓴다 (이름 정규식보다 우선)
+    eq(resolve_market({'name': 'LS', 'market': 'KR'}), 'KR', "기록된 market 우선")
+    eq(resolve_market({'name': 'AMD', 'market': 'US'}), 'US', "US 기록도 그대로")
+
+    # 구버전 항목(market 없음)은 analysis.json 의 meta 로 되찾는다
+    eq(resolve_market({'name': 'JYP'}), 'KR',
+       "market 미기록 JYP -> analysis.json meta.country=KR 로 복구")
+    eq(resolve_market({'name': 'LS'}), 'KR',
+       "market 미기록 LS -> analysis.json meta.country=KR 로 복구")
+    eq(resolve_market({'name': 'AMD'}), 'US', "market 미기록 AMD -> US")
+    eq(resolve_market({'name': '없는종목XYZ'}), 'KR',
+       "정보가 전혀 없으면 KR 로 보수 처리 (틀린 미국 티커 조회보다 안전)")
+
+    # --- 9d. CLI 플래그 파싱 (리뷰: flag 가 마지막 인자면 IndexError) ---
+    eq(flag_value(['settle', '--note', 'abc'], '--note'), 'abc', "정상 값 추출")
+    eq(flag_value(['settle', '--note'], '--note', ''), '', "flag 가 마지막 -> default (IndexError 아님)")
+    eq(flag_value(['settle', '--note', '--as-of'], '--note', ''), '',
+       "다음 토큰이 또 다른 flag -> default")
+    eq(flag_value(['settle'], '--note', 'x'), 'x', "flag 없음 -> default")
+
     # --- 10. 파일이 깨지지 않는다 (원자적 쓰기 왕복) ---
     raw_text = open(log_path, encoding='utf-8').read()
-    truthy(raw_text.count('<!-- ENTRY_END -->') >= 4, "구분자가 항목 수만큼 존재")
+    truthy(raw_text.count('<!-- ENTRY_END -->') >= 5, "구분자가 항목 수만큼 존재")
     log2 = DecisionLog(log_path)
-    eq(len(log2.load_entries()), 4, "새 인스턴스에서 재파싱 성공")
+    eq(len(log2.load_entries()), 5, "새 인스턴스에서 재파싱 성공 (LS 포함 5건)")
 
     # --- 11. 존재하지 않는 항목 정산은 조용히 무시 ---
     log.update_with_outcome('없는종목', '2020-01-01', 0.1, 0.1, 10, reflection='x')
-    eq(len(log.load_entries()), 4, "없는 항목 정산은 파일을 훼손하지 않는다")
+    eq(len(log.load_entries()), 5, "없는 항목 정산은 파일을 훼손하지 않는다")
 
 finally:
     shutil.rmtree(tmpdir, ignore_errors=True)

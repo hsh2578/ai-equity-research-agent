@@ -90,6 +90,23 @@ def score(rating, alpha_pct):
     return 'N/A'
 
 
+def _tag_fields(tag):
+    """'[a | b | c]' -> ['a','b','c']. 태그가 아니면 빈 리스트."""
+    t = tag.strip()
+    if not (t.startswith('[') and t.endswith(']')):
+        return []
+    return [x.strip() for x in t[1:-1].split('|')]
+
+
+def _is_pending_tag(tag):
+    """pending 여부. 접미사가 아니라 필드로 판정한다.
+
+    태그 끝에 market:KR / resolved:... 같은 부가 필드가 붙을 수 있으므로
+    endswith('| pending]') 로 보면 새 형식을 놓친다.
+    """
+    return 'pending' in _tag_fields(tag)[3:4]
+
+
 class DecisionLog:
     def __init__(self, path=DEFAULT_LOG, max_entries=None):
         self.path = path
@@ -116,7 +133,7 @@ class DecisionLog:
             body.append(f"투자 논지: {thesis}")
         if extra:
             body.append(extra)
-        entry = (f"[{trade_date} | {name} | {rating} | pending]\n\n"
+        entry = (f"[{trade_date} | {name} | {rating} | pending | market:{market}]\n\n"
                  f"DECISION:\n" + "\n".join(body) + SEPARATOR)
         with open(self.path, 'a', encoding='utf-8') as f:
             f.write(entry)
@@ -138,13 +155,16 @@ class DecisionLog:
                 continue
             lines = s.splitlines()
             tag = lines[0].strip()
-            if not updated and tag.startswith(prefix) and tag.endswith("| pending]"):
+            if not updated and tag.startswith(prefix) and _is_pending_tag(tag):
                 fields = [f.strip() for f in tag[1:-1].split("|")]
                 rating = fields[2]
+                keep_market = next((f for f in fields[3:] if f.startswith("market:")), None)
                 new_tag = (f"[{trade_date} | {name} | {rating} | "
                            f"{raw_return:+.1%} | {alpha_return:+.1%} | {holding_days}d")
                 if resolution_date:
                     new_tag += f" | resolved:{resolution_date}"
+                if keep_market:
+                    new_tag += f" | {keep_market}"
                 new_tag += "]"
                 rest = "\n".join(lines[1:]).lstrip()
                 refl = reflection.strip() or "(reflection 미작성)"
@@ -171,7 +191,7 @@ class DecisionLog:
                 marks.append((b, False))
                 continue
             tag = s.splitlines()[0].strip()
-            resolved = tag.startswith('[') and tag.endswith(']') and not tag.endswith('| pending]')
+            resolved = bool(_tag_fields(tag)) and not _is_pending_tag(tag)
             marks.append((b, resolved))
         n_res = sum(1 for _, r in marks if r)
         drop = n_res - self.max_entries
@@ -208,10 +228,12 @@ class DecisionLog:
         f = [x.strip() for x in tag[1:-1].split('|')]
         if len(f) < 4:
             return None
-        resolved = None
+        resolved, market = None, None
         for x in f[3:]:
             if x.startswith('resolved:'):
                 resolved = x[len('resolved:'):].strip()
+            elif x.startswith('market:'):
+                market = x[len('market:'):].strip()
         body = "\n".join(lines[1:]).strip()
         dm = _DECISION_RE.search(body)
         rm = _REFLECTION_RE.search(body)
@@ -219,9 +241,10 @@ class DecisionLog:
             'date': f[0], 'name': f[1], 'rating': f[2],
             'pending': f[3] == 'pending',
             'raw': None if f[3] == 'pending' else f[3],
-            'alpha': f[4] if len(f) > 4 and not f[4].startswith('resolved:') else None,
-            'holding': f[5] if len(f) > 5 and not f[5].startswith('resolved:') else None,
+            'alpha': f[4] if len(f) > 4 and not _is_meta(f[4]) else None,
+            'holding': f[5] if len(f) > 5 and not _is_meta(f[5]) else None,
             'resolved': resolved,
+            'market': market,
             'decision': dm.group(1).strip() if dm else '',
             'reflection': rm.group(1).strip() if rm else '',
         }
@@ -320,6 +343,61 @@ def fetch_returns(name, market, start_date, end_date=None):
         return None
 
 
+def flag_value(args, flag, default=None):
+    """--flag 뒤의 값을 안전하게 꺼낸다.
+
+    `args[args.index(flag) + 1]` 은 flag 가 마지막 인자일 때 IndexError 를 낸다.
+    뒤에 값이 없거나 다음 토큰이 또 다른 --flag 면 default 를 돌려준다.
+    """
+    if flag not in args:
+        return default
+    i = args.index(flag) + 1
+    if i >= len(args) or str(args[i]).startswith('--'):
+        return default
+    return args[i]
+
+
+def _is_meta(field):
+    """태그의 부가 필드(resolved:/market:)인가."""
+    return field.startswith('resolved:') or field.startswith('market:')
+
+
+def resolve_market(entry):
+    """정산 시점의 시장 판정.
+
+    초판은 종목명을 정규식 [A-Z.]{1,6} 으로 검사해 시장을 '추측' 했다.
+    그 결과 JYP(035900, KOSDAQ) / LS(006260, KOSPI) 같은 영문 대문자 이름의
+    한국 종목이 US 로 분류돼 yf.Ticker('LS') (= Lands' End) 의 주가로
+    alpha 를 계산하고도 **에러 없이** 로그에 기록됐다.
+
+    판정 순서:
+      1. 로그에 기록된 market (store_decision 이 meta.country 로부터 남긴 값)
+      2. scripts/analysis_{name}.json 의 meta.country / meta.market
+      3. 둘 다 없으면 KR (틀린 미국 티커를 조회하는 것보다 실패하는 편이 안전하다)
+    """
+    m = (entry.get('market') or '').upper()
+    if m in ('KR', 'US'):
+        return m
+    name = entry.get('name', '')
+    p = f'scripts/analysis_{name}.json'
+    if os.path.exists(p):
+        try:
+            meta = (json.load(open(p, encoding='utf-8')).get('meta') or {})
+            c = (meta.get('country') or '').upper()
+            if c in ('US', 'USA'):
+                return 'US'
+            if c:
+                return 'KR'
+            mk = (meta.get('market') or '').upper()
+            if mk in ('NASDAQ', 'NYSE', 'AMEX'):
+                return 'US'
+            if mk:
+                return 'KR'
+        except Exception:
+            pass
+    return 'KR'
+
+
 def _resolve_kr_meta(name):
     """analysis.json 에서 (종목코드, 시장) 반환. 시장은 벤치마크 선택에 쓴다."""
     p = f'scripts/analysis_{name}.json'
@@ -362,9 +440,8 @@ def cmd_record(args):
 def cmd_settle(args):
     log = DecisionLog()
     targets = log.get_pending()
-    note = ''
+    note = flag_value(args, '--note', '')
     if '--note' in args:
-        note = args[args.index('--note') + 1]
         args = args[:args.index('--note')]
     if args:
         targets = [e for e in targets if e['name'] == args[0]]
@@ -372,7 +449,7 @@ def cmd_settle(args):
         print("정산할 pending 항목이 없습니다.")
         return 0
     for e in targets:
-        market = 'US' if re.fullmatch(r'[A-Z.]{1,6}', e['name']) else 'KR'
+        market = resolve_market(e)
         r = fetch_returns(e['name'], market, e['date'])
         if not r:
             print(f"  [SKIP] {e['name']} {e['date']} -- 수익률 계산 불가")
@@ -396,7 +473,7 @@ def cmd_context(args):
     if not args:
         print("usage: decision_log.py context {종목명} [--as-of YYYY-MM-DD]")
         return 1
-    as_of = args[args.index('--as-of') + 1] if '--as-of' in args else None
+    as_of = flag_value(args, '--as-of')
     ctx = DecisionLog().get_past_context(args[0], as_of=as_of)
     print(ctx or "(과거 정산 기록 없음)")
     return 0

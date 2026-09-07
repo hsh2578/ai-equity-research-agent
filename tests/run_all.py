@@ -1,18 +1,49 @@
-"""전체 테스트 실행기 (v5.5). 실행: python tests/run_all.py"""
-import io, os, sys, subprocess
+"""전체 테스트 실행기 (v5.5).
+
+    python tests/run_all.py
+
+- 자체 스위트: 의존성 없이 python 단독 실행 (assert 기반)
+- tests/broker/: 이식본이라 원 프로젝트 방식대로 pytest 로 돈다
+"""
+import io
+import os
+import sys
+import subprocess
+
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-suites = ['test_quarter_labels.py', 'test_decision_log.py', 'test_guard_hook.py']
+SUITES = ['test_quarter_labels.py', 'test_decision_log.py', 'test_guard_hook.py']
+PYTEST_DIRS = ['broker']
+
 fails = []
-for s in suites:
+total = 0
+
+for s in SUITES:
     p = os.path.join(HERE, s)
     if not os.path.exists(p):
         continue
+    total += 1
     r = subprocess.run([sys.executable, p], capture_output=True, text=True, encoding='utf-8')
     tail = [l for l in (r.stdout or '').splitlines() if '테스트:' in l]
     print(f"  [{'OK  ' if r.returncode == 0 else 'FAIL'}] {s:<26} {tail[0].strip() if tail else ''}")
     if r.returncode != 0:
         fails.append(s)
         print((r.stdout or '')[-600:])
-print(f"\n  스위트 {len(suites) - len(fails)}/{len(suites)} 통과")
+
+for d in PYTEST_DIRS:
+    dd = os.path.join(HERE, d)
+    if not os.path.isdir(dd):
+        continue
+    total += 1
+    r = subprocess.run([sys.executable, '-m', 'pytest', dd, '-q'],
+                       capture_output=True, text=True, encoding='utf-8')
+    tail = [l for l in (r.stdout or '').splitlines() if 'passed' in l or 'failed' in l]
+    label = f'{d}/ (pytest)'
+    print(f"  [{'OK  ' if r.returncode == 0 else 'FAIL'}] {label:<26} {tail[-1].strip() if tail else ''}")
+    if r.returncode != 0:
+        fails.append(d)
+        print((r.stdout or '')[-600:])
+
+print(f"\n  스위트 {total - len(fails)}/{total} 통과")
 sys.exit(1 if fails else 0)
