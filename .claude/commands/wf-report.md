@@ -6,6 +6,55 @@ allowed-tools: Bash, Read, Write, Edit, Glob, Grep, WebSearch, WebFetch
 
 # 위닝펀드 Word 리포트 생성 스킬 (`/wf-report`)
 
+## v5.5 신설 도구 연결 (2026-09)
+
+`/wf-report` 는 `/research` 와 데이터 수집·analysis.json 을 공용하므로 아래가 그대로 적용된다.
+
+### 정독 의무를 실행 가능하게 (가장 큰 변화)
+
+이 스킬은 "산업 3+ / 기업 3+ 애널리스트 리포트 정독"을 의무로 규정하면서 정작
+수집기가 없었다. 그래서 종목마다 `_cw_fetch_reports.py`, `_cw_dl.py`,
+`_oci_hist_analyst.py` 같은 일회용 스크립트를 새로 짜고 있었다.
+
+```bash
+python scripts/fetch_broker_reports.py {종목명} --category 기업 --months 6
+python scripts/fetch_broker_reports.py {종목명} --category 산업 --keyword {업종} --months 6
+```
+
+-> `data/{종목}/reports_text/{idx}.txt` (전문) + `_broker_reports.json` (목차).
+**한경은 IP rate limit 을 건다. `--workers 2 --delay 0.6` 초과 금지.**
+
+### 작성 전 필수 3종
+
+```bash
+python scripts/build_snapshot.py {종목명}    # 수치 source of truth. 미수집 항목은 주장 금지
+python scripts/evidence_scan.py {종목명}     # 실측 증거 + 반증 (원문 인용 + file:line)
+python scripts/decision_log.py context {종목명}   # 같은 종목 과거 콜과 실제 alpha
+```
+
+**인용 박스는 `_evidence_scan.json` 의 quote 를 복사한다.** 원문 100% 복사 + 위치가
+붙어 있으므로 가짜 인용이 구조적으로 불가능하다 (이 스킬의 "원문 grep 매칭 후 100% 복사"
+규칙을 자동화한 것).
+
+### 밸류에이션 전제 검증 (OCI홀딩스 실측 사고)
+
+**밸류에이션의 핵심 전제 수치는 반드시 1차 출처에서 grep 으로 확인한다.**
+
+실측: OCI홀딩스 리포트가 "폴리실리콘 3.5 -> 7만톤 증설(2029년 완료)"을 전제로
+목표주가를 산출했는데, DART 공시 3건 전부에 `7만톤` 이 **0건**이었다.
+실제 공시는 **5만 6,600톤**이고 그마저 "증설 여부를 결정할 예정" 단계였다.
+전제를 정정하면 목표가가 285,000 -> 236,000원(-17.2%)으로 내려간다.
+
+작성 시 규칙: 목표가 산식에 들어가는 캐파·판가·가동률·완공시점은
+`grep "{수치}" data/{종목}/_dart_FULL_*.txt` 로 존재를 확인한 뒤 쓴다. 0건이면 쓰지 않는다.
+
+### bear-researcher 서브에이전트
+
+핵심 포지션은 `report-critic` 전에 `bear-researcher` 를 백그라운드 호출한다.
+반증 + 실격 조건 5가지 점검 결과를 리스크 섹션과 밸류에이션 감도에 반영한다.
+
+---
+
 종목 하나를 받아 **리서치 정독 → 수집 → 분석(analysis.json) → 도표 → Word(.docx)** 를 한 번에 만든다.
 산출물은 **Word 단일**(PDF 아님). 구조는 **위닝펀드 7섹션**(요약·산업분석·기업분석·투자포인트·재무분석·리스크·밸류에이션, 아래 `## 위닝펀드 7섹션 구조` 참조).
 가장 중요한 가치 2가지: **(1) 최신 애널리스트 리포트(산업·기업) 정독을 서사에 반영, (2) 본문 소제목에 딱 맞는 도표 생성**.

@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **산출 경로 2종 (공용 수집 → analysis.json → 분기)**:
 - **`/research`** → `generate_all.py` → **단일 상세 PDF** (Navy/Gold, HTML→PDF). 기본 경로.
+- **US 종목** → `/research {TICKER}` 진입 후 `.claude/commands/_research_us.md` 로 라우팅 (v5.5). 공통 뼈대는 `research.md`, 데이터 수집·정독·검증만 US 파일이 대체.
 - **`/wf-report`** → `generate_word_wf.py` → **위닝펀드 스타일 Word(.docx)** + 본문 소제목에 맞는 도표 하이브리드 삽입. 데이터 수집·analysis.json은 `/research`와 동일 자산 공용, 산출 포맷·도표·검증만 별도. 상세: `## Word 리포트 파이프라인` 섹션.
 
 ## Development Setup
@@ -76,6 +77,9 @@ python scripts/verify_facts.py {종목명}      # D1~D6 (KR/US 공통)
 
 # 사업보고서 핵심 인용 추출
 python scripts/report_extractor.py data/{종목명}/data_dart_reports.json
+
+# 테스트 (v5.5 신설, 93 케이스 / 3 스위트)
+python tests/run_all.py
 
 # 스킬 코드 블록 또는 scripts/* 변경 후 문법 체크
 python -c "import py_compile; py_compile.compile('scripts/generate_all.py', doraise=True)"
@@ -214,6 +218,22 @@ out_path = f'_tmp_r{idx}_{short}.txt'
 | `wf_chart_planner.py` | **(/wf-report)** analysis.json → `data/{종목}/chart_plan.json` (섹션 카탈로그 + 본문 키워드 하이브리드). `[OK]`=데이터 준비, `[제안]`=본문 근거로 채울 특수 도표 |
 | `generate_word_wf.py` | **(/wf-report)** analysis.json + chart_plan.json → `output/{종목}/report_{종목}.docx`. 마크다운 풀파싱 + 도표 소제목 매칭 삽입. `_EMOJI` strip은 `→`·`★☆` 보존(2026-06 패치) |
 | `verify_docx.py` | **(/wf-report)** Word 전용 D1~D6 (도표 이미지 수 == 준비 도표 / 캡션 / 출처선 / 이모지 잔재 / 표지 / 섹션 헤더). `★☆` 별점 허용 |
+
+### v5.5 신설 (2026-09)
+
+| Script | Purpose |
+|---|---|
+| `build_snapshot.py` | **사전 그라운딩.** 흩어진 실측 파일을 `data/{종목}/_verified_snapshot.md` 한 장으로 묶는다. 없는 항목은 `미수집` 으로 명시해 **그 항목의 수치 주장 자체를 금지**한다. KR/US 자동 분기. STEP 3 진입 전 Read 의무 |
+| `evidence_scan.py` | **반증 의무 자동화.** DART 전문/증권사 리포트/SEC 본문에서 실측 증거와 **반증**을 원문 인용 + `file:line` 으로 추출. 회계 보일러플레이트/표 조각 자동 제외. 인용에 위치가 붙어 가짜 인용이 구조적으로 불가능 |
+| `decision_log.py` | **결정 로그 + alpha 사후평가.** `record` / `settle` / `pending` / `context` / `stats`. 벤치마크는 KODEX200·코스닥150 ETF (FDR 지수 심볼 KS11/KQ11 은 LOGOUT 으로 죽는다). 방향 인식 채점(BUY=alpha>0 / SELL=alpha<0 / HOLD=\|alpha\|<=10%) |
+| `us_consensus.py` | **US 컨센 추이.** yfinance `eps_trend`/`eps_revisions`/`earnings_estimate`/`price_targets`/`upgrades_downgrades`. KR Wisereport 컨센 추이의 미국판, 추가 API 키 불필요 |
+| `fdr_band_us.py` | US 5년 PER/PBR 밴드. **밴드 유효성 게이트** 신설 -- 표본<3 또는 변동계수>0.6 이면 `per_band_valid: false` (AMD 실측 CV 0.66) |
+| `peer_snapshot_us.py` | US Peer 실시간 (업종키 10종 내장). 기존 인라인 임시코드를 스크립트로 고정 |
+| `quarter_labels.py` | 분기 라벨 파싱 공용 모듈. **B13 이 v4.20부터 죽어 있던 것을 복구** (headers 에 분기가 오는데 rows[0] 을 읽어 항상 거짓 PASS). 표기 5종 지원 + 구멍 탐지 방식으로 전환 |
+| `fetch_broker_reports.py` | 종목/업종 애널리스트 리포트 일괄 수집 -> `data/{종목}/reports_text/`. `/wf-report` 정독 의무를 실행 가능하게 만든다 |
+| `broker/` | 한경 컨센서스 수집기 이식본 (`fetch_range`/`fetch_all`/`extract_pdf`/`rs_table`/`build_corpus`). **한경은 IP rate limit -- `--workers 2 --delay 0.6` 초과 금지** |
+| `.claude/hooks/guard.py` | PreToolUse 차단 hook. KIS 소문자 키(JYP v1 사고 원인) / 루트 임시덤프 / print em-dash |
+
 
 **STEP 6 검증 자동 분기 규칙 (v4.15)**:
 - `data/{종목명}/data_kis.json` 존재 → KR 종목 → `verify_numbers.py`
