@@ -211,19 +211,44 @@ PROBES = [
 ]
 
 
-def run(only=None):
+# 일시 장애로 보이는 예외는 재시도한다. 헬스체크가 거짓 경보를 내면
+# 아무도 안 보게 되고, 그러면 진짜 사망(FnGuide) 을 또 놓친다.
+TRANSIENT = ('500', '502', '503', '504', 'Timeout', 'timed out',
+             'Connection', 'RemoteDisconnected', 'Max retries')
+RETRIES = 2
+RETRY_WAIT = 2.0
+
+
+def _is_transient(msg):
+    return any(t in msg for t in TRANSIENT)
+
+
+def run(only=None, retries=RETRIES):
     results = []
     for name, fn, critical in PROBES:
         if only and name not in only:
             continue
         r = Result(name, critical)
         t0 = time.time()
-        try:
-            fn(r)
-        except ImportError as e:
-            r.fail(f'모듈 없음: {e}')
-        except Exception as e:
-            r.fail(f'{type(e).__name__}: {str(e)[:150]}')
+        last = ''
+        for attempt in range(retries + 1):
+            r.status, r.detail = 'SKIP', ''
+            try:
+                fn(r)
+            except ImportError as e:
+                r.fail(f'모듈 없음: {e}')
+                break
+            except Exception as e:
+                last = f'{type(e).__name__}: {str(e)[:150]}'
+                r.fail(last)
+            if r.status == 'OK':
+                break
+            if attempt < retries and _is_transient(r.detail or last):
+                time.sleep(RETRY_WAIT)
+                continue
+            break
+        if r.status != 'OK' and _is_transient(r.detail or ''):
+            r.detail = f'{retries + 1}회 시도 모두 실패 -- {r.detail}'
         r.elapsed = time.time() - t0
         results.append(r)
     return results

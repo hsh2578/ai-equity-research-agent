@@ -18,7 +18,8 @@ SUITES = ['test_quarter_labels.py', 'test_decision_log.py', 'test_guard_hook.py'
           'test_fdr_band_us.py', 'test_evidence_scan.py', 'test_us_consensus.py',
           'test_fetch_broker_reports.py',
           'test_peer_snapshot_us.py', 'test_build_snapshot.py',
-          'test_verify_check_ids.py', 'test_market_cap_parse.py']
+          'test_verify_check_ids.py', 'test_market_cap_parse.py',
+          'test_fnguide_data.py']
 PYTEST_DIRS = ['broker']
 
 fails = []
