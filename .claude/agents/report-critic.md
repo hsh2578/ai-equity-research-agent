@@ -44,6 +44,19 @@ model: inherit
 - `data/{종목명}/data_dart_reports.json` — 사업보고서 5개 원문
 - `data/{종목명}/data_kis.json` — KIS 현재가·수급·일봉
 - `data/{종목명}/_tmp_r0_*.txt` — 사업보고서 섹션 덤프 (있으면, Grep으로 검색)
+- `data/{종목명}/_dart_FULL_*.txt` — DART 사업보고서 **전문** (요약본과 달리 truncate 없음)
+
+### v5.5 신설 파일 (있으면 반드시 본다)
+- `data/{종목명}/_verified_snapshot.md` — 결정론적 수치 스냅샷. **리포트의 수치가 이것과
+  다르면 리포트가 틀린 것이다.** `미수집` 으로 표기된 항목을 리포트가 수치로 주장하고
+  있으면 그것은 날조다.
+- `data/{종목명}/_evidence_scan.json` — 원문에서 뽑은 실측 증거와 **반증**. 각 인용에
+  `file:line` 이 붙어 있다. `counter` 배열에 있는 반증을 리포트가 다루지 않았다면
+  그것이 결함이다. 반증 건수가 증거 건수보다 많은데 리포트가 강세면 특히 그렇다.
+- `data/{종목명}/_us_consensus.json` (US) — 컨센 추이·리비전. 리포트의 "눈높이 상향/하향"
+  서술이 `derived.consensus_direction` 과 반대면 결함이다.
+- `output/_decision_log.md` — 이 종목의 과거 콜과 실제 alpha, 그리고 그때 남긴 반성.
+  같은 논리로 과거에 틀렸는데 이번에도 같은 논리를 쓰고 있으면 지적한다.
 
 ### 교차 검증 도구
 - **Bash + Python**: 필요시 실측 수치 재조회 (KIS API, FDR) 또는 간단 계산 (DCF 민감도, Altman Z 5요소 분해)
