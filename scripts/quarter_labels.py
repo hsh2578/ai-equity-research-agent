@@ -12,7 +12,9 @@ analysis.json 의 quarterly 표는 **headers 에 분기 라벨**이 오고 rows 
 한국콜마/와이지엔터 모두 "확정 4분기 충족" 이라는 잘못된 메시지로 통과했다.
 
 이 모듈은 두 가지를 고친다:
-  1. headers 와 rows 첫 열 **양쪽**에서 분기 라벨을 찾는다 (표 방향 무관)
+  1. headers 와 rows **양쪽**에서 분기 라벨을 찾는다 (표 방향 무관).
+     rows 는 list(첫 열이 라벨) / dict(키가 라벨) 두 형태 모두 처리한다 --
+     v5.5 초판은 dict 를 순회하며 키 문자열만 얻고 조용히 버렸다.
   2. "최근 연도에 4분기가 다 있는가" 대신 **"연속된 분기 사이에 구멍이 있는가"** 를 본다.
      진행 중인 연도(예: 1Q26 까지만 발표)를 오탐하지 않으면서,
      에스엠 1Q25 누락 같은 실제 사고는 잡는다.
@@ -79,10 +81,49 @@ def parse_label(label: str):
     return None
 
 
+def _row_labels(rows):
+    """rows 컨테이너에서 라벨 후보 문자열을 뽑는다.
+
+    rows 는 실제 데이터에서 두 형태로 나온다 (analysis 39개 중 dict 14 / list 24):
+
+      list 형: [['매출', 100, 110], ['영업이익', 10, 12]]   -> 첫 열이 라벨
+      dict 형: {'매출액(억원)': [100, 110], '영업이익(억원)': [...]} -> **키가 라벨**
+
+    과거에는 dict 를 그대로 `for row in rows` 로 돌려 키(문자열)만 얻었고,
+    문자열은 list/tuple 분기에도 dict 분기에도 걸리지 않아 **조용히 무시**됐다.
+    지금은 headers 가 항상 분기 라벨을 갖고 있어 가려져 있을 뿐, 전치(transpose)
+    표(키가 '1Q25')가 오면 분기 누락이 통째로 미검증으로 통과한다.
+    """
+    out = []
+    if isinstance(rows, dict):
+        for key, val in rows.items():
+            out.append(str(key))          # 전치 표: 키가 분기 라벨
+            if isinstance(val, dict):     # {'1Q25': {'매출': ...}} 형태의 부가 라벨
+                for k in ('period', 'quarter', 'label', '분기', '항목'):
+                    if k in val:
+                        out.append(str(val[k]))
+                        break
+        return out
+    if not isinstance(rows, (list, tuple)):
+        return out
+    for row in rows:
+        if isinstance(row, (list, tuple)) and row:
+            out.append(str(row[0]))
+        elif isinstance(row, dict):
+            for key in ('period', 'quarter', 'label', '분기', '항목'):
+                if key in row:
+                    out.append(str(row[key]))
+                    break
+        elif isinstance(row, str):
+            out.append(row)
+    return out
+
+
 def collect_quarters(quarterly: dict):
     """quarterly dict -> (confirmed, estimated, raw_labels)
 
-    headers 와 rows 첫 열 양쪽을 훑어 표 방향에 관계없이 라벨을 찾는다.
+    headers 와 rows 양쪽을 훑어 표 방향에 관계없이 라벨을 찾는다.
+    rows 는 list(첫 열이 라벨) / dict(키가 라벨) 둘 다 처리한다.
     confirmed / estimated 는 (year, quarter) 튜플의 정렬된 리스트.
     """
     if not isinstance(quarterly, dict):
@@ -93,14 +134,7 @@ def collect_quarters(quarterly: dict):
     if isinstance(headers, (list, tuple)):
         candidates.extend(str(h) for h in headers)
 
-    for row in (quarterly.get('rows') or []):
-        if isinstance(row, (list, tuple)) and row:
-            candidates.append(str(row[0]))
-        elif isinstance(row, dict):
-            for key in ('period', 'quarter', 'label', '분기', '항목'):
-                if key in row:
-                    candidates.append(str(row[key]))
-                    break
+    candidates.extend(_row_labels(quarterly.get('rows')))
 
     confirmed, estimated, raw = [], [], []
     for c in candidates:

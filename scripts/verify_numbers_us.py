@@ -4,7 +4,7 @@ STEP 6 1회차 B 블록 -- 수치 정합성 자동 검증 스크립트 (미국 �
 사용법:
     python scripts/verify_numbers_us.py {TICKER}
 
-출력: B1~B15 항목 PASS/FAIL/SKIP + 구체적 원인.
+출력: B1~B20 항목 PASS/FAIL/SKIP + 구체적 원인.
 NFLX/PANW v1 사고 (52주 고점 날조, EPS 산술 불일치, Stock split 단위 혼재) 재발 방지.
 
 검증 항목:
@@ -22,6 +22,10 @@ NFLX/PANW v1 사고 (52주 고점 날조, EPS 산술 불일치, Stock split 단�
 - B15 DCF 공정가치 vs Base 타겟 괴리 경고 (50%+ 차이 시)
 - B17 본문 핵심 수치 일관성 (v4.17 신설) -- FCF / 순부채 / 시총이 본문 여러 곳에서 다른 값으로 등장 시 FAIL
        AMD 사고: FCF $55억 vs $67억 7곳 혼재
+- B19 밴드 유효성 게이트 (v5.5 신설) -- per_band_valid=False 인데 본문이 "5년 평균 대비" 단정 시 FAIL
+- B20 분기 누락 (v5.5 신설, quarter_labels 모듈 공용) -- 확정 분기 사이 구멍 감지
+       초판은 B13 으로 냈다가 'B13 GAAP/Non-GAAP' 와 id 가 겹쳐 B20 으로 이동.
+       한 실행에서 서로 다른 두 검증이 같은 번호로 출력되면 "B13 PASS" 가 무의미해진다.
 """
 import json
 import sys
@@ -577,15 +581,17 @@ def main(ticker):
             f"순리비전30d {dv.get('net_revisions_+1y_30d')}" if c_fwd_eps else '컨센 정합 OK')
         results.append(('B11 컨센 정합', status, detail))
 
-    # ========== B13 (v5.5 신설): 분기 누락 (KR 과 동일 모듈 공용) ==========
+    # ========== B20 (v5.5 신설): 분기 누락 (KR 과 동일 모듈 공용) ==========
     # US 는 10-Q 가 YTD 누적이라 역산 과정에서 분기가 통째로 빠지기 쉽다.
+    # 주의: 초판은 이 검증을 B13 으로 냈는데 위의 'B13 GAAP/Non-GAAP' 와 id 가 겹쳐
+    #       한 실행에서 서로 다른 두 검증이 같은 번호로 출력됐다. B20 으로 분리한다.
     from quarter_labels import check as _q_check
-    b13_errs, b13_detail = _q_check(d.get('quarterly', {}))
-    status = 'PASS' if not b13_errs else 'FAIL'
-    if b13_errs:
+    b20_errs, b20_detail = _q_check(d.get('quarterly', {}))
+    status = 'PASS' if not b20_errs else 'FAIL'
+    if b20_errs:
         fail += 1
-    results.append(('B13 분기 누락', status,
-                    '; '.join(b13_errs)[:220] if b13_errs else b13_detail))
+    results.append(('B20 분기 누락', status,
+                    '; '.join(b20_errs)[:220] if b20_errs else b20_detail))
 
     # ========== B19 (v5.5 신설): 밴드 유효성 게이트 ==========
     # _per_band.json 의 per_band_valid=False 인데 본문이 "5년 평균 대비" 를 단정하면 차단.

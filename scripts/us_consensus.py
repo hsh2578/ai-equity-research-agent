@@ -31,7 +31,10 @@ import os
 import json
 from datetime import datetime, timedelta
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+# 이미 UTF-8 로 감싸져 있으면 다시 감싸지 않는다 (두 번 감싸면 먼저 만든 래퍼가
+# GC 될 때 buffer 를 닫아 이 모듈을 import 한 쪽의 stdout 이 죽는다).
+if (getattr(sys.stdout, 'encoding', '') or '').lower().replace('-', '') != 'utf8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 try:
     import yfinance as yf
@@ -272,15 +275,32 @@ def print_summary(d: dict):
         print(f"\n  [WARN] {w}")
 
 
+def flag_value(args, flag, default=None):
+    """--flag 뒤의 값을 안전하게 꺼낸다 (decision_log.flag_value 와 동일 규칙).
+
+    `args[args.index(flag) + 1]` 은 flag 가 마지막 인자일 때 IndexError 를 낸다.
+    뒤에 값이 없거나 다음 토큰이 또 다른 --flag 면 default 를 돌려준다.
+    """
+    if flag not in args:
+        return default
+    i = args.index(flag) + 1
+    if i >= len(args) or str(args[i]).startswith('--'):
+        return default
+    return args[i]
+
+
+def resolve_out_dir(argv, ticker):
+    """--dir 값 또는 기본 data/{TICKER}. --dir 가 마지막 인자여도 죽지 않는다."""
+    return flag_value(argv, '--dir', f'data/{ticker}')
+
+
 def main():
     if len(sys.argv) < 2:
         print("usage: python scripts/us_consensus.py {TICKER} [--dir data/{TICKER}]")
         return 1
 
     ticker = sys.argv[1].upper()
-    out_dir = f'data/{ticker}'
-    if '--dir' in sys.argv:
-        out_dir = sys.argv[sys.argv.index('--dir') + 1]
+    out_dir = resolve_out_dir(sys.argv, ticker)
 
     print(f"[1/1] {ticker} 컨센서스 수집 (yfinance)...")
     d = collect(ticker)

@@ -123,24 +123,38 @@ def peer_multiples(data, title, out_dir, name='wf_peer_multiples'):
     if not has_pbr:
         axes = [axes]
 
-    def _bars(ax, vals, label):
+    def _bars(ax, vals, label, miss_labels=None):
+        # vals 에는 '적자'/'N/A' Peer 때문에 None 이 섞인다 (planner 가 _num 으로 채우므로 실재).
+        # None 을 그대로 ax.bar 에 넘기면 TypeError 로 Word 빌드 전체가 죽는다.
+        vals = (list(vals or []) + [None] * len(names))[:len(names)]
+        miss_labels = list(miss_labels or [])
+        nums = [v for v in vals if v is not None]
+        heights = [v if v is not None else 0 for v in vals]
         cols = [TPL_BLUE if i == hl else GREY for i in range(len(names))]
-        b = ax.bar(range(len(names)), vals, color=cols, alpha=0.9, width=0.62)
+        ax.bar(range(len(names)), heights, color=cols, alpha=0.9, width=0.62)
+        span = max((abs(v) for v in nums), default=1.0) or 1.0
         for i, v in enumerate(vals):
             if v is None:
+                mark = miss_labels[i] if i < len(miss_labels) and miss_labels[i] else 'N/A'
+                ax.text(i, span * 0.03, mark, ha='center', fontsize=8.5,
+                        weight='bold', color=GREY)
                 continue
-            ax.text(i, v + max([x for x in vals if x is not None]) * 0.02, f'{v:.1f}',
+            ax.text(i, v + span * 0.02, f'{v:.1f}',
                     ha='center', fontsize=8.5, weight='bold',
                     color=TPL_BLUE if i == hl else NAVY)
+        if not nums:
+            ax.set_ylim(0, 1)
+            ax.text(0.5, 0.55, '비교 가능 데이터 없음', transform=ax.transAxes,
+                    ha='center', fontsize=9.5, color=GREY)
         ax.set_xticks(range(len(names)))
         ax.set_xticklabels(names, fontsize=8.5, rotation=0)
         ax.set_title(label, fontsize=10, color=NAVY, weight='bold')
         _strip_spines(ax)
         ax.tick_params(labelsize=8.5)
 
-    _bars(axes[0], per, 'PER (배)')
+    _bars(axes[0], per, 'PER (배)', data.get('per_labels'))
     if has_pbr:
-        _bars(axes[1], pbr, 'PBR (배)')
+        _bars(axes[1], pbr, 'PBR (배)', data.get('pbr_labels'))
     return _save(fig, out_dir, name, title)
 
 

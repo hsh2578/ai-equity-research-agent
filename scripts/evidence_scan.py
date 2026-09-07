@@ -26,6 +26,13 @@
     python scripts/evidence_scan.py 한국콜마
     python scripts/evidence_scan.py OCI홀딩스 --min-quote 2
 
+`--min-quote N` (기본 1) = **유형별 최소 인용 수**. 어떤 유형(가동률/수주잔고/...)이
+N 건 미만이면 그 유형을 결과에서 통째로 뺀다. 단발 히트는 오탐일 확률이 높아
+`--min-quote 2` 로 올리면 서로 뒷받침하는 인용이 있는 유형만 남는다.
+
+**반증(counter)에는 적용하지 않는다.** 이 스크립트의 존재 이유가 반증 수집이고
+(위 rules.md 인용 참조), 반증은 1건이라도 값이 있다. 실측 증거와 실격 신호만 거른다.
+
 출력: data/{종목}/_evidence_scan.json + 콘솔 표
 """
 import sys
@@ -164,7 +171,47 @@ def dedupe(hits, limit_per_type=4):
     return out
 
 
+def filter_min_quote(hits, min_quote):
+    """유형별 인용이 min_quote 건 미만인 유형을 통째로 제거한다.
+
+    min_quote=1 이면 아무것도 빼지 않는다 (기존 동작과 동일).
+    """
+    if min_quote <= 1:
+        return list(hits)
+    counts = {}
+    for h in hits:
+        counts[h['type']] = counts.get(h['type'], 0) + 1
+    return [h for h in hits if counts[h['type']] >= min_quote]
+
+
+def flag_value(args, flag, default=None):
+    """--flag 뒤의 값을 안전하게 꺼낸다 (decision_log.flag_value 와 동일 규칙).
+
+    `args[args.index(flag) + 1]` 은 flag 가 마지막 인자일 때 IndexError 를 낸다.
+    뒤에 값이 없거나 다음 토큰이 또 다른 --flag 면 default 를 돌려준다.
+    """
+    if flag not in args:
+        return default
+    i = args.index(flag) + 1
+    if i >= len(args) or str(args[i]).startswith('--'):
+        return default
+    return args[i]
+
+
+def parse_min_quote(args, default=1):
+    """--min-quote 값을 1 이상의 int 로. 값이 없거나 이상하면 default."""
+    raw = flag_value(args, '--min-quote')
+    if raw is None:
+        return default
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        print(f"  [WARN] --min-quote {raw} 는 숫자가 아니다. {default} 로 진행.")
+        return default
+
+
 def main(stock, min_quote=1):
+    min_quote = max(1, int(min_quote or 1))
     files = list(iter_source_files(stock))
     if not files:
         print(f"[ERR] data/{stock}/ 에 정독 대상 원문이 없다.")
@@ -177,6 +224,7 @@ def main(stock, min_quote=1):
         '_description': f'{stock} 증거/반증 스캔 (결정론적, LLM 미개입)',
         '_scanned_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'stock': stock,
+        'min_quote': min_quote,
         'files': [],
         'evidence': [], 'counter': [], 'disqualify': [],
     }
@@ -202,6 +250,16 @@ def main(stock, min_quote=1):
     for bucket in ('evidence', 'counter', 'disqualify'):
         result[bucket] = dedupe(result[bucket])
 
+    # min_quote 는 실측 증거/실격 신호에만 건다. 반증은 1건이라도 남긴다.
+    dropped = {}
+    for bucket in ('evidence', 'disqualify'):
+        before = {h['type'] for h in result[bucket]}
+        result[bucket] = filter_min_quote(result[bucket], min_quote)
+        gone = before - {h['type'] for h in result[bucket]}
+        if gone:
+            dropped[bucket] = sorted(gone)
+    result['min_quote_dropped_types'] = dropped
+
     ev_real = [h for h in result['evidence'] if not h['forecast_only']]
     ev_fc = [h for h in result['evidence'] if h['forecast_only']]
 
@@ -209,6 +267,10 @@ def main(stock, min_quote=1):
     print(f"  증거/반증 스캔: {stock}")
     print(f"{'=' * 72}")
     print(f"  원문 {len(files)}개 / {total_chars:,}자")
+    if min_quote > 1:
+        print(f"  min_quote={min_quote} (유형별 {min_quote}건 미만은 제외, 반증은 예외)")
+        for bucket, types in dropped.items():
+            print(f"    - {bucket} 제외 유형: {', '.join(types)}")
     print(f"\n  실측 증거 {len(ev_real)}건 / 전망성(증거 아님) {len(ev_fc)}건 "
           f"/ **반증 {len(result['counter'])}건** / 실격신호 {len(result['disqualify'])}건")
 
@@ -247,9 +309,6 @@ def main(stock, min_quote=1):
 
 if __name__ == '__main__':
     if len(sys.argv) < 2:
-        print("usage: python scripts/evidence_scan.py {종목명}")
+        print("usage: python scripts/evidence_scan.py {종목명} [--min-quote N]")
         sys.exit(1)
-    mq = 1
-    if '--min-quote' in sys.argv:
-        mq = int(sys.argv[sys.argv.index('--min-quote') + 1])
-    sys.exit(main(sys.argv[1], mq))
+    sys.exit(main(sys.argv[1], parse_min_quote(sys.argv[1:])))

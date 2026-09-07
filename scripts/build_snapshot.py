@@ -65,6 +65,52 @@ def fmt(v, unit='', nd=2, comma=True):
     return f"{s}{unit}"
 
 
+def _first(d, *keys, default=None):
+    """여러 스키마 변종 중 처음 값이 있는 키를 고른다.
+
+    수집 스크립트마다 키 이름이 갈려 있다 (peer_snapshot.py 는 code/market_cap_uk,
+    구 산출물은 종목코드/시가총액). 한쪽만 보면 있는 데이터가 '미수집' 으로 렌더되고,
+    그러면 에이전트가 실제로 있는 데이터를 없다고 결론 낸다.
+    """
+    if not isinstance(d, dict):
+        return default
+    for k in keys:
+        v = d.get(k)
+        if v not in (None, ''):
+            return v
+    return default
+
+
+def vol_annual_pct(beta: dict):
+    """연율 변동성을 **% 단위**로 통일해 돌려준다. 없으면 None.
+
+    volatility_beta.py(KR)  -> vol_annual = 0.4525  (비율)
+    US 인라인 산출물         -> vol_annual_pct = 62.33 (이미 %)
+    과거 산출물              -> sigma_annual = 38.4   (%)
+
+    과거 코드는 `sigma_annual` / `변동성` 만 봐서 KR/US 실측 파일 어느 쪽도
+    읽지 못하고 항상 '미수집' 을 냈다.
+    """
+    if not isinstance(beta, dict):
+        return None
+    v = _first(beta, 'vol_annual_pct', 'sigma_annual_pct', '연율변동성_pct')
+    if v is not None:
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+    v = _first(beta, 'vol_annual', 'sigma_annual', '변동성', 'volatility')
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    # 비율(0.45)로 저장된 값과 %(45.2)로 저장된 값이 섞여 있다.
+    # 연율 변동성이 300% 를 넘는 주식은 사실상 없으므로 3.0 을 경계로 쓴다.
+    return f * 100 if abs(f) <= 3.0 else f
+
+
 class Snapshot:
     def __init__(self, name):
         self.name = name
@@ -268,9 +314,14 @@ class Snapshot:
                 rows.append([k, v.get('ticker', ''), fmt(v.get('market_cap_b'), 'B'),
                              fmt(v.get('per_trailing')), fmt(v.get('per_forward')), fmt(v.get('pbr'))])
             else:
-                rows.append([k, v.get('종목코드', v.get('ticker', '')),
-                             fmt(v.get('시가총액', v.get('market_cap'))),
-                             fmt(v.get('PER', v.get('per'))), fmt(v.get('PBR', v.get('pbr'))), ''])
+                # peer_snapshot.py 는 code / market_cap_uk(억원) / per / pbr 로 쓴다.
+                # 과거에는 '종목코드' / '시가총액' 만 봐서 **수집된 KR Peer 가 전부
+                # '미수집' 으로 렌더**됐다 (조용한 무력화). 구 한글 키도 함께 받는다.
+                rows.append([k,
+                             _first(v, 'code', '종목코드', 'ticker'),
+                             fmt(_first(v, 'market_cap_uk', '시가총액', 'market_cap')),
+                             fmt(_first(v, 'per', 'PER')),
+                             fmt(_first(v, 'pbr', 'PBR')), ''])
         hdr = (['종목', '티커', '시총($B)', 'PER', 'Fwd PER', 'PBR'] if self.market == 'US'
                else ['종목', '코드', '시총(억)', 'PER', 'PBR', ''])
         self.table(hdr, rows)
@@ -282,11 +333,21 @@ class Snapshot:
             self.gap('베타', '베타, 연율 변동성, 시장 민감도 수치 인용 금지')
             return
         b = self.beta
+        vol = vol_annual_pct(b)
+        beta_v = _first(b, 'beta', '베타')
+        r2 = _first(b, 'r_squared', 'r2', 'R2')
+        bench = _first(b, 'benchmark', 'market_code', '기준', '기준지수', default=MISSING)
         self.table(['항목', '실측값'],
-                   [['Beta', fmt(b.get('beta'))],
-                    ['연율 변동성', fmt(b.get('sigma_annual', b.get('변동성')), '%')],
-                    ['R^2', fmt(b.get('r_squared', b.get('r2')))],
-                    ['기준 지수', b.get('benchmark', b.get('기준', MISSING))]])
+                   [['Beta', fmt(beta_v)],
+                    ['연율 변동성', fmt(vol, '%', 2)],
+                    ['R^2', fmt(r2)],
+                    ['기준 지수', bench]])
+        # 개별 항목이 비어 있으면 그 항목만 '주장 금지' 목록에 올린다.
+        # (전체 파일 부재만 gap 으로 잡던 과거에는 변동성이 늘 미수집인데도 gap 이 0 이었다)
+        if beta_v is None:
+            self.gap('베타', '베타, 시장 민감도 수치 인용 금지')
+        if vol is None:
+            self.gap('연율 변동성', '연율 변동성, 변동성 기반 포지션 사이징 주장 금지')
 
     def sec_supply(self):
         if self.market != 'KR':

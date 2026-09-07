@@ -119,6 +119,62 @@ errs, _ = check({'headers': ['항목', "Q3'25", "Q4'25", "Q2'26E"]})
 truthy(any('확정 분기 2개' in x for x in errs), "확정 분기 4개 미만 경고 (AMD 실제 케이스)")
 
 
+# --- rows 가 dict 인 실제 데이터 (analysis 39개 중 14개가 이 형태) ---
+# scripts/analysis_에스엠.json 원본 형태. rows 가 {지표명: [분기별 값]} 이라
+# 과거 collect_quarters 는 dict 를 순회하며 키(문자열)만 얻었고, 그 문자열은
+# list/tuple 분기에도 dict 분기에도 안 걸려 **조용히 무시**됐다.
+# headers 가 항상 분기 라벨을 갖고 있어서 가려져 있었을 뿐이다.
+SM_DICT = {
+    'headers': ['항목', '2025 1Q', '2025 2Q', '2025 3Q', '2025 4Q', '2026 1Q(잠정)'],
+    'rows': {
+        '매출액(억원)': [2314, 3029, 3216, 3190, 2791],
+        '영업이익(억원)': [326, 476, 482, 546, 386],
+        '지배순이익(억원)': [2482, 293, 398, 299, '약 300(추정)'],
+        '비고': ['디어유 일회성 NI 2,482', '투어 본격', '글로벌 투어', 'MD 성장', '연결 +18.5%'],
+    },
+    'year': '2025~2026',
+}
+c_d, e_d, raw_d = collect_quarters(SM_DICT)
+eq(c_d, [(2025, 1), (2025, 2), (2025, 3), (2025, 4), (2026, 1)],
+   "dict rows -- headers 분기 라벨 정상 수집 (에스엠 실제 형태)")
+eq(check(SM_DICT)[0], [], "dict rows -- 에스엠 실제 데이터 누락 없음")
+falsy([r for r in raw_d if '매출' in r], "dict rows 의 지표명 키를 분기 라벨로 오인하지 않음")
+
+# CJ프레시웨이 실제 형태 회귀
+CJF = {
+    'headers': ['항목', '2025 1Q', '2025 2Q', '2025 3Q', '2025 4Q', '2026 1Q'],
+    'rows': {'매출액(억)': [7986, 8833, 9012, 8980, 8339],
+             '영업이익(억)': [107, 274, 336, 300, 110]},
+}
+eq(check(CJF)[0], [], "CJ프레시웨이 dict rows 실제 형태 -> 통과")
+
+# 전치(transpose) dict: 키가 분기 라벨인 형태 ("표 방향 무관" 표방의 실제 이행)
+TRANSPOSED = {
+    'headers': ['항목', '매출', '영업이익'],
+    'rows': {'1Q25': [100, 10], '2Q25': [110, 12], '3Q25': [120, 14], '4Q25': [130, 16]},
+}
+c_t, _, _ = collect_quarters(TRANSPOSED)
+eq(c_t, [(2025, 1), (2025, 2), (2025, 3), (2025, 4)],
+   "dict rows -- 키가 분기 라벨인 전치 표도 수집")
+
+# headers 에 라벨이 없고 dict 키에만 있는데 실제 구멍이 있으면 조용히 통과하면 안 된다
+TRANSPOSED_GAP = {
+    'headers': ['항목', '매출'],
+    'rows': {'1Q25': [100], '3Q25': [120], '4Q25': [130], '1Q26': [140]},
+}
+truthy(any('2Q25' in x for x in check(TRANSPOSED_GAP)[0]),
+       "dict rows 전치 표의 2Q25 누락을 조용히 넘기지 않음")
+
+# dict 값이 또 dict 인 형태도 키에서 라벨을 얻는다
+c_dd, _, _ = collect_quarters({'rows': {'1Q25': {'매출': 100}, '2Q25': {'매출': 110}}})
+eq(c_dd, [(2025, 1), (2025, 2)], "dict rows -- 값이 dict 여도 키에서 라벨 수집")
+
+# 추정 표기가 dict 키에 있으면 확정이 아니라 추정으로 분류
+c_e, e_e, _ = collect_quarters({'rows': {'1Q25': [1], '2Q25': [2], '3Q25E': [3]}})
+eq(c_e, [(2025, 1), (2025, 2)], "dict rows -- 확정만 confirmed 로")
+eq(e_e, [(2025, 3)], "dict rows -- '3Q25E' 는 estimated 로")
+
+
 print(f"\n{'=' * 60}")
 print(f"  quarter_labels 테스트: {_passed}개 통과 / {len(_failed)}개 실패")
 print(f"{'=' * 60}")

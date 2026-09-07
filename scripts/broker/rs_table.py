@@ -22,8 +22,11 @@ FETCH_QUOTE = os.path.join(HERE, "fetch_quote.py")
 
 def run_window(codes: list[str], bench: str, start: str, end: str) -> list[dict]:
     """fetch_quote.py 를 호출해 한 구간의 수익률·상대강도를 받는다."""
-    cmd = [sys.executable, FETCH_QUOTE, *codes, bench,
-           "--start", start, "--end", end]
+    # 벤치마크는 --bench 로 준다. 위치 인자(codes)에 섞으면 fetch_quote 가 그것을
+    # 또 하나의 종목으로 조회하고 --bench 는 기본값 "KOSPI" 로 폴백한다
+    # (--bench KOSDAQ 을 줘도 상대강도가 전부 KOSPI 기준으로 계산되던 버그).
+    cmd = [sys.executable, FETCH_QUOTE, *codes,
+           "--bench", bench, "--start", start, "--end", end]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True,
                              encoding="utf-8", timeout=300)

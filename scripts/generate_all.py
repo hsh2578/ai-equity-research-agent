@@ -27,6 +27,55 @@ import re
 import html as html_lib
 
 
+
+def parse_market_cap(raw):
+    """리포트 표기 시총 문자열 -> 숫자. 파싱 불가면 None.
+
+    Peer 교차검증(#10)이 analysis.json `peers[].market_cap` 을 `_peer_snapshot.json`
+    의 `market_cap_uk` 와 비교하는데, 기존 파서는 '조'/'억'/',' 만 지웠다.
+    그래서 US 리포트의 "$5,062B" 를 만나면 float() 이 ValueError 를 냈고,
+    **시총 비교가 통째로 건너뛰어졌다** (JYP v1 재발 방지 검증이 US 에선 꺼져 있었다).
+
+    단위 규약 (스냅샷 생성기와 동일):
+      KR "38,169억" / "3.82조"  -> 억 단위 숫자
+      US "$5,062B" / "$1.2T"    -> B 단위 숫자
+
+    실패 시 0 이 아니라 None 을 돌려준다. 0 은 '시총 0' 으로 읽혀 비교가
+    조용히 통과하는 원인이 된다.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    s = s.replace(',', '').replace(' ', '')
+    for junk in ('USD', 'usd', '$', '약', '원'):
+        s = s.replace(junk, '')
+
+    import re as _re
+
+    # KR: '12조 3456억' 같은 혼합 표기를 먼저 처리
+    jo = _re.search(r'(-?\d+(?:\.\d+)?)조', s)
+    uk = _re.search(r'(-?\d+(?:\.\d+)?)억', s)
+    if jo or uk:
+        total = 0.0
+        if jo:
+            total += float(jo.group(1)) * 10000    # 조 -> 억
+        if uk:
+            total += float(uk.group(1))
+        return total
+
+    # US: T / B / M 접미사
+    m = _re.search(r'(-?\d+(?:\.\d+)?)\s*([TBM])(?![A-Za-z])', s, _re.I)
+    if m:
+        val = float(m.group(1))
+        mult = {'t': 1000.0, 'b': 1.0, 'm': 0.001}[m.group(2).lower()]
+        return val * mult
+
+    m = _re.search(r'-?\d+(?:\.\d+)?', s)
+    return float(m.group(0)) if m else None
+
+
 def md_table_to_html(txt, table_class=""):
     """섹션 본문 안의 마크다운 테이블을 HTML 테이블로 변환. 나머지는 <br>로 join."""
     lines = txt.split('\n')
@@ -4234,12 +4283,11 @@ def main():
                 if not snap:
                     warnings.append(f"Peer '{pname}'이 _peer_snapshot.json에 없음. 실시간 조회 필요")
                     continue
-                # 시총 비교 (억 단위)
-                json_mc_str = str(p.get("market_cap", "")).replace("조", "").replace("억", "").replace(",", "").strip()
+                # 시총 비교 (KR=억원 / US=$B, 각 시장 리포트가 쓰는 단위 그대로)
+                json_mc = parse_market_cap(p.get("market_cap"))
                 try:
-                    json_mc = float(json_mc_str)
-                    if "조" in str(p.get("market_cap", "")):
-                        json_mc *= 10000  # 조→억
+                    if json_mc is None:
+                        raise ValueError("market_cap 파싱 불가")
                     snap_mc = snap.get("market_cap_uk", 0)
                     if snap_mc > 0:
                         ratio = json_mc / snap_mc

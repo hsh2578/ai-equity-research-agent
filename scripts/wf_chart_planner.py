@@ -11,7 +11,13 @@
 출력 chart_plan.json 항목: {order, section_key, archetype, title, source, name, data}
 """
 import sys, io, json, re
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+try:
+    # reconfigure 는 기존 객체를 그대로 쓴다. TextIOWrapper 로 새로 감싸면
+    # 감싸인 쪽이 GC 될 때 실제 stdout 버퍼가 닫혀, 이 모듈을 import 한 호출자의
+    # 출력이 "I/O operation on closed file" 로 죽는다 (import 부작용).
+    sys.stdout.reconfigure(encoding='utf-8')
+except (AttributeError, ValueError):
+    pass
 from pathlib import Path
 
 DEFAULT_AUTHOR = '위닝펀드 3조 황성혁'
@@ -37,12 +43,70 @@ def _num(x):
     return None
 
 
+# 기간 라벨 판별 -- 표 방향(지표행 vs 전치)을 가르는 데 쓴다.
+# 2022 / 2026E / FY22 / '25 / 2024.09 / 1Q25 / Q1 FY25 / 2025 1Q 를 모두 기간으로 본다.
+_PERIOD_RE = re.compile(
+    r"^\s*(?:FY)?['’]?\d{2,4}\s*(?:[EFP]|년|E\)|F\))?\s*$"   # 2022, FY22, 2026E, '25
+    r"|^\s*\d{4}\s*[./\-]\s*\d{1,2}\s*$"                       # 2024/09
+    r"|\d\s*Q|Q\s*\d",                                          # 1Q25, Q1 FY25, 2025 1Q
+    re.I)
+
+
+def _looks_period(vals):
+    """라벨 리스트가 '기간 축'처럼 보이는가 (과반이 기간 표기)."""
+    vals = [str(v) for v in vals if str(v).strip()]
+    if not vals:
+        return False
+    hits = sum(1 for v in vals if _PERIOD_RE.search(v))
+    return hits >= max(1, int(len(vals) * 0.6))
+
+
+def _table_rows(table):
+    """analysis.json 표(financials/quarterly) -> (기간 라벨 리스트, [(지표명, 값들), ...]).
+
+    실제 파일에 3가지 형태가 공존한다. 방향에 무관하게 '지표별 시계열'로 정규화한다:
+      A) rows dict          {지표: [값...]}        기간 = headers[1:]  (에스엠/JYP/두산 ...)
+      B) rows list, 지표행   [[지표, 값...]]         기간 = headers[1:]  (AMD/기아/카카오 ...)
+      C) rows list, 전치     [[기간, 값...]]         지표 = headers[1:]  (GS리테일/삼성전자 quarterly ...)
+
+    B/C 구분은 headers[1:] 와 rows 첫 열 중 어느 쪽이 기간 축처럼 보이는지로 판정한다.
+    """
+    if not isinstance(table, dict):
+        return [], []
+    headers = table.get('headers') or []
+    if not isinstance(headers, (list, tuple)):
+        headers = []
+    periods = list(headers[1:])
+    rows = table.get('rows')
+
+    if isinstance(rows, dict):                       # (A)
+        return periods, [(str(k), list(v) if isinstance(v, (list, tuple)) else [v])
+                         for k, v in rows.items()]
+
+    if not isinstance(rows, (list, tuple)) or not rows:
+        return periods, []
+
+    cells = [r for r in rows if isinstance(r, (list, tuple)) and r]
+    if not cells:
+        return periods, []
+
+    col0 = [str(r[0]) for r in cells]
+    transposed = _looks_period(col0) and not _looks_period(periods)
+
+    if transposed:                                   # (C)
+        metrics = list(headers[1:])
+        out = []
+        for j, m in enumerate(metrics):
+            out.append((str(m), [r[j + 1] if len(r) > j + 1 else None for r in cells]))
+        return col0, out
+
+    return periods, [(str(r[0]), list(r[1:])) for r in cells]   # (B)
+
+
 def _fin_row(A, *substrs, require_all=None):
     """financials.rows 에서 키에 substrs 가 (모두/하나) 포함된 첫 행 -> (years, vals)."""
-    fin = A.get('financials', {})
-    headers = fin.get('headers', [])
-    years = headers[1:]
-    for k, v in fin.get('rows', {}).items():
+    years, rows = _table_rows((A or {}).get('financials'))
+    for k, v in rows:
         ok = all(s in k for s in substrs) if require_all else any(s in k for s in substrs)
         if ok:
             return years, [_num(x) for x in v]
@@ -61,20 +125,37 @@ def b_segment_pie(A):
     return {'labels': [s['name'] for s in segs], 'values': [s.get('pct', 0) for s in segs]}
 
 
+def _missing_label(raw):
+    """숫자로 못 읽은 Peer 멀티플의 사유 라벨. 도표에 막대 대신 표기한다."""
+    s = str(raw).strip() if raw is not None else ''
+    if '적자' in s:
+        return '적자'
+    if s in ('', '-', '--', 'n/a', 'N/A', 'na', 'NA', 'None', 'null'):
+        return 'N/A'
+    return s[:6] or 'N/A'
+
+
 def b_peer_multiples(A):
     peers = A.get('peers') or []
     if len(peers) < 2:
         return None
-    names, per, pbr, hl = [], [], [], 0
+    names, per, pbr, per_lb, pbr_lb, hl = [], [], [], [], [], 0
     sname = A.get('meta', {}).get('stock_name', '')
     for i, p in enumerate(peers):
         nm = _short_name(p.get('name', ''))
         names.append(nm.replace('테인먼트', '').replace('엔터', 'YG') if sname.startswith(nm[:2]) else nm)
-        per.append(_num(p.get('per')))
-        pbr.append(_num(p.get('pbr')))
+        # '적자' / 'N/A' peer 는 _num 이 None 을 준다 -- 막대 없이 사유 라벨만 표기
+        v_per, v_pbr = _num(p.get('per')), _num(p.get('pbr'))
+        per.append(v_per)
+        pbr.append(v_pbr)
+        per_lb.append(None if v_per is not None else _missing_label(p.get('per')))
+        pbr_lb.append(None if v_pbr is not None else _missing_label(p.get('pbr')))
         if p.get('highlight') or '본 종목' in p.get('name', '') or sname[:3] in p.get('name', ''):
             hl = i
-    return {'names': names, 'per': per, 'pbr': pbr, 'highlight_idx': hl}
+    if all(v is None for v in per) and all(v is None for v in pbr):
+        return None   # PER/PBR 전부 결측이면 비교 도표 자체가 의미 없다
+    return {'names': names, 'per': per, 'pbr': pbr, 'highlight_idx': hl,
+            'per_labels': per_lb, 'pbr_labels': pbr_lb}
 
 
 def b_dupont_roe(A):
@@ -94,12 +175,10 @@ def b_bars_from_row(label_match, ylabel, total=False):
 
 
 def b_quarterly_revenue(A):
-    q = A.get('quarterly', {})
-    headers = q.get('headers', [])
-    if len(headers) < 2:
+    quarters, rows = _table_rows((A or {}).get('quarterly'))
+    if not quarters or not rows:
         return None
-    quarters = headers[1:]
-    for k, v in q.get('rows', {}).items():
+    for k, v in rows:
         if k.startswith('매출'):
             return {'categories': quarters, 'series': {'매출액(억원)': [_num(x) or 0 for x in v]},
                     'ylabel': '매출액 (억원)'}
