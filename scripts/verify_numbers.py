@@ -4,8 +4,13 @@ STEP 6 1회차 B 블록 -- 수치 정합성 자동 검증 스크립트 (v4.5 신
 사용법:
     python scripts/verify_numbers.py {종목명}
 
-출력: B1~B10 10개 항목 PASS/FAIL + 구체적 원인.
+출력: B1~B23 항목 PASS/FAIL + 구체적 원인.
 삼성전자 v1의 13건 사고 중 8건을 사전 차단 목적.
+
+- B23 밴드 유효성 게이트 (v5.7 신설, US 판 B19 의 KR 이식)
+       _per_band.json 의 per_band_valid / pbr_band_valid 가 False 인데 본문이
+       "5년 평균 대비" 처럼 밴드를 단정하면 FAIL. 풍산/OCI홀딩스 같은 사이클주는
+       PER 이 3.6 -> 20.3 (또는 1.7 -> 34,062) 로 튀어 평균/z-score 가 노이즈다.
 """
 import json
 import sys
@@ -15,7 +20,45 @@ import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+# 이미 UTF-8 로 감싸져 있으면 다시 감싸지 않는다 (두 번 감싸면 먼저 만든 래퍼가
+# GC 될 때 buffer 를 닫아 이 모듈을 import 한 쪽의 stdout 이 죽는다).
+if (getattr(sys.stdout, 'encoding', '') or '').lower().replace('-', '') != 'utf8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
+
+# B23: 밴드가 유효할 때만 써도 되는 표현들 (US verify_numbers_us.py B19 와 동일)
+BAND_CLAIM_WORDS = ['5년 평균', '역사적 평균', '5Y 평균', '역사적 밴드',
+                    '밴드 상단', '밴드 하단', 'z-score', 'σ']
+
+
+def band_claims_in(text):
+    """본문에 쓰인 밴드 단정 표현 목록."""
+    text = text or ''
+    return [w for w in BAND_CLAIM_WORDS if w in text]
+
+
+def band_gate(band, text):
+    """B23 밴드 유효성 게이트 -> (status, detail).
+
+    band 가 None 이거나 per_band_valid 키가 없는 구버전이면 SKIP (거짓 FAIL 금지).
+    밴드가 무효인데 본문이 밴드 표현으로 단정하면 FAIL.
+    """
+    if band is None:
+        return 'SKIP', '_per_band.json 없음 (fdr_band.py 미실행)'
+    if band.get('per_band_valid') is None and band.get('pbr_band_valid') is None:
+        return 'SKIP', '구버전 _per_band.json (scripts/fdr_band.py 재실행 권장)'
+
+    claimed = band_claims_in(text)
+    invalid = [lab for lab, key in (('PER', 'per_band_valid'), ('PBR', 'pbr_band_valid'))
+               if band.get(key) is False]
+    if claimed and invalid:
+        why = '; '.join(band.get('warnings', [])[:2])
+        return 'FAIL', (
+            f"{'/'.join(invalid)} 밴드 무효인데 본문이 밴드 표현 사용: {claimed[:3]} -- "
+            f"연도별 값을 직접 제시하는 서술로 교체 필요"
+            + (f" [{why}]" if why else ""))
+    return 'PASS', (f"per_valid={band.get('per_band_valid')} "
+                    f"pbr_valid={band.get('pbr_band_valid')} / 밴드 표현 {len(claimed)}건")
 
 
 def load_or_none(path):
@@ -706,9 +749,19 @@ def main(stock_name):
         fail += 1
     results.append(('B22 N/M 100% 비약', 'FAIL' if b22_errs else 'PASS', '; '.join(b22_errs)[:200] if b22_errs else 'broker 데이터 일관 또는 미감지'))
 
+    # ========== B23 (v5.7 신설): 밴드 유효성 게이트 (US B19 의 KR 이식) ==========
+    # _per_band.json 의 per/pbr_band_valid 가 False 인데 본문이 "5년 평균 대비" 를
+    # 단정하면 차단. 사이클주(풍산/OCI홀딩스)는 PER 분산이 커서 평균이 노이즈다.
+    band23 = load_or_none(f'data/{stock_name}/_per_band.json')
+    text_concat = ' '.join(v for v in sections.values() if isinstance(v, str))
+    b23_status, b23_detail = band_gate(band23, text_concat)
+    if b23_status == 'FAIL':
+        fail += 1
+    results.append(('B23 밴드 유효성', b23_status, b23_detail[:250]))
+
     # 출력
     print(f"\n{'='*70}")
-    print(f"  STEP 6 1회차 B 블록 (v5.0 B14~B18 포함) -- 수치 정합성: {stock_name}")
+    print(f"  STEP 6 1회차 B 블록 (B1~B23) -- 수치 정합성: {stock_name}")
     print(f"{'='*70}\n")
     for item, status, detail in results:
         icon = '✓' if status == 'PASS' else ('✗' if status == 'FAIL' else '?')
@@ -718,7 +771,7 @@ def main(stock_name):
     if fail > 0:
         print(f"[경고] {fail}건의 수치 정합성 오류 발견. STEP 6 1회차에서 반드시 수정 후 2회차로 진입하라.")
         return 2
-    print("[OK] 모든 B 블록(B1~B18) 통과. 2회차 report-critic 호출 가능.")
+    print("[OK] 모든 B 블록(B1~B23) 통과. 2회차 report-critic 호출 가능.")
     return 0
 
 

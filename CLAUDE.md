@@ -234,6 +234,57 @@ out_path = f'_tmp_r{idx}_{short}.txt'
 | `broker/` | 한경 컨센서스 수집기 이식본 (`fetch_range`/`fetch_all`/`extract_pdf`/`rs_table`/`build_corpus`). **한경은 IP rate limit -- `--workers 2 --delay 0.6` 초과 금지** |
 | `.claude/hooks/guard.py` | PreToolUse 차단 hook. KIS 소문자 키(JYP v1 사고 원인) / 루트 임시덤프 / print em-dash |
 
+### v5.6 신설 (2026-09)
+
+| Script | Purpose |
+|---|---|
+| `source_health.py` | **외부 소스 헬스체크.** KIS/DART/FnGuide/FDR/yfinance/SEC/한경 7종을 두드린다. **응답이 왔다고 살아있다고 보지 않는다** -- 에러페이지 감지(200 이어도 짧거나 에러 문구면 실패) + **서로 다른 두 종목을 조회해 결과가 실제로 다른지 확인**(기본 페이지 반환 함정) + 일시 5xx 는 2회 재시도. `/research` STEP 1 진입 전 실행 권장 |
+| `macro_data.py` | FRED(US) / ECOS(KR) 매크로 시계열. `FRED_API_KEY` 는 통합 .env 에 있다 |
+
+## ⚠️ 외부 소스는 예고 없이 죽는다 (2026-09 FnGuide 사고)
+
+`comp.fnguide.com/SVO2/ASP/*.asp` 가 HTTP **200** 으로 "페이지가 없습니다" 를 돌려주기 시작했다.
+`fnguide_data.py` 가 `except Exception: return None` 으로 삼켜 `{"financial": null}` 이 저장됐고
+**몇 달간 아무도 몰랐다.** 그 상태 파일이 3건(한국콜마/씨에스윈드/와이지엔터).
+CLAUDE.md 가 "풍산 v1 매출/OP 0원 사고를 차단한다" 고 명시한 바로 그 도구였다.
+
+새 주소: `https://wcomp.fnguide.com/CompanyInfo/{Snapshot,Finance,Consensus,FinanceRatio}?c_id=AA&menu_type=01&cmp_cd={6자리}`
+
+**표가 파싱되는 것과 데이터가 있는 것은 다르다.** 신 사이트는 SPA 라서 `<table>` 이 전부
+빈 템플릿이다 (Finance 표는 147셀 중 non-null **0**). `pd.read_html` 이 "4/4 성공" 을 보고해도
+데이터는 없다. 실제 값은 페이지 하단 임베드 JSON(`finance.init({...})`) 과
+`/CompanyInfo/getFinIncome|getFinBalance|getFinCashFlow|getSnpFinancial|getCnsPerforTrend` 에 있다.
+
+**그래서 지켜야 할 3가지:**
+1. 새 수집기를 만들 때 `except: return None` 을 쓰지 않는다. 실패 이유를 구조화해 남긴다.
+2. **응답 검증**: 요청한 종목의 데이터가 맞는지 확인한다 (구 `.aspx` 는 어떤 코드를 넣어도 삼성전자를 줬다).
+3. 데이터 수집 전 `python scripts/source_health.py` 를 돌린다.
+
+회복 범위(정직하게): 분기 실측/재무상태표/현금흐름/헤더 지표 완전 회복, 컨센 추정은 확대,
+**연간 실적은 5년 -> 4년 축소**, **ROE 추정치는 신 데이터셋에 없어 못 되찾음**.
+
+## API 키 통합 (2026-09)
+
+Desktop 하위에 `.env` 가 19개 흩어져 있었고 루트엔 24개 키뿐이라,
+**이미 갖고 있는 키를 다른 프로젝트에서 못 쓰는** 상태였다 (`FRED_API_KEY` 등 23개).
+
+```
+C:/Users/hsh/Desktop/.env          <- 마스터 51개 키. 여기만 고친다
+C:/Users/hsh/Desktop/env_loader.py <- 새 프로젝트에서 2줄로 로드
+C:/Users/hsh/Desktop/sync_env.py   <- 미러 동기화 + 드리프트 점검
+vibecoding/API_KEYS.md             <- 키 용도/사용처 (값 없음)
+```
+
+로딩 우선순위는 **마스터 -> 중간 -> 프로젝트 로컬** 이라 **로컬이 마스터를 덮는다.**
+기존 프로젝트의 `.env` 는 하나도 건드리지 않았고 동작도 그대로다
+(실측: `병목기업 찾기` 는 자기 한투 계정을 유지).
+
+**주의**: 현재 `KIS_BASE_URL` 은 **모의투자(29443)** 이고 실전(9443)은 `KIS_BASE_URL_ALT2`,
+실전 자격증명은 `KIS_REAL_APP_KEY`/`KIS_REAL_APP_SECRET` 에 있다.
+실측 결과 두 엔드포인트가 **동일한 값**을 반환하지만(삼성전자 270,000원/PER 41.13/PBR 4.22),
+모의 서버는 간헐적으로 HTTP 500 을 낸다.
+
+
 
 **STEP 6 검증 자동 분기 규칙 (v4.15)**:
 - `data/{종목명}/data_kis.json` 존재 → KR 종목 → `verify_numbers.py`
