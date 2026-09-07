@@ -24,14 +24,25 @@ OCI홀딩스 1.7 -> 34,062, 카카오 17 -> 308.
   (4) 주당 기준(액면분할 등) 불일치 연도 제외. FDR 종가는 수정주가인데
       KIS 재무비율 EPS/BPS 가 분할 전 기준이면 배수가 10배 틀린다.
 
-KR 특유 사정 -- 발행주식수
+KR 특유 사정 -- 발행주식수 (가드 4 가 KR 에서 휴면인 이유)
   KIS 재무비율은 연도별 발행주식수를 주지 않는다. 대신 그 해 EPS/BPS 를
-  원 단위로 직접 준다. 따라서 BPS 는 **그 해 bps 필드가 1순위**이고,
-  없을 때만 자기자본(억원) / 그 해 주식수 로 역산한다. 그 해 주식수는
-  순이익(억원)*1e8 / EPS(원) 로 얻는다 (둘 다 같은 해 공시값).
-  끝내 못 구하면 **BPS/PBR 을 산출하지 않고** 사유를 warnings 에 남긴다.
-  오늘 주식수로 과거 자기자본을 나누면 자사주 소각/증자 기업이 전부 틀린다.
-  틀린 숫자보다 '없다'가 낫다.
+  원 단위로 직접 준다. 그래서 BPS 는 **그 해 bps 필드가 1순위**이고, 없을 때만
+  자기자본(억원) / **그 해 명시 주식수** 로 역산한다. 명시 주식수가 없으면
+  **BPS/PBR 을 산출하지 않고** 사유를 notes 에 남긴다. 오늘 주식수로 과거
+  자기자본을 나누면 자사주 소각/증자 기업이 전부 틀린다 -- 틀린 숫자보다
+  '없다'가 낫다.
+
+  주식수를 순이익(억원)*1e8 / EPS(원) 로 역산하는 방법은 **쓰지 않는다.**
+  실데이터로 검증했더니 이 역산은 연결 순이익(비지배 포함)을 지배주주 EPS 로
+  나누는 꼴이라 지주사/저마진 연도에서 통째로 어긋났다:
+    두산 2021 ratio 4.21 / 2025 4.34 (지주사, 매년 일정 -- 분할이 아니다)
+    GS리테일 2024 4.69, 한국콜마 2023 4.68 (순이익이 거의 0 인 해)
+    에스엠 2024 0.04 (순이익 8억, EPS 778원)
+  이 값으로 연도를 제외하면 **분산이 큰 해가 조용히 지워져** 노이즈 밴드가
+  valid 로 뒤집힌다(에스엠 PER 97배 연도가 사라지고 CV 0.38 로 '유효' 판정).
+  가드의 취지와 정반대다. 따라서 basis_problem 은 **명시 주식수가 있을 때만**
+  판정한다. 현재 KR financial_summary 에는 그 필드가 없어 사실상 휴면이며,
+  액면분할로 인한 배수 왜곡은 가드 2(변동계수)가 대신 잡는다.
 
 출력 키 호환: 기존 키(closes / per_series / pbr_series / per_mean / per_std /
 pbr_mean / pbr_std / current_per / current_per_z / current_pbr / current_pbr_z /
@@ -76,29 +87,17 @@ def confirmed_year_closes(year_rows, current_year):
 
 
 def year_shares(year_data):
-    """그 연도의 발행주식수(주). 못 구하면 None.
+    """그 연도의 **명시** 발행주식수(주). 없거나 0 이면 None.
 
-    1순위: shares_outstanding 필드 (있는 경우)
-    2순위: 순이익(억원) * 1e8 / EPS(원) -- 둘 다 그 해 공시값이다.
-    적자 연도(순이익 <= 0)는 역산하지 않는다.
+    순이익/EPS 역산은 하지 않는다 (모듈 docstring 의 실측 근거 참조).
+    추정치로 BPS 를 만들거나 연도를 제외하면 밴드가 조용히 왜곡된다.
     """
-    yd = year_data or {}
-    v = yd.get('shares_outstanding')
+    v = (year_data or {}).get('shares_outstanding')
     try:
         v = float(v)
-        if v > 0:
-            return v
-    except (TypeError, ValueError):
-        pass
-
-    ni, eps = yd.get('net_income'), yd.get('eps')
-    try:
-        ni, eps = float(ni), float(eps)
     except (TypeError, ValueError):
         return None
-    if ni <= 0 or eps <= 0:
-        return None
-    return ni * EOK / eps
+    return v if v > 0 else None
 
 
 def year_bps(year_data):
@@ -123,7 +122,11 @@ def year_bps(year_data):
 
 
 def basis_problem(year_data, ref_shares):
-    """연도 전체를 버려야 하는 주당 기준 불일치인가. 사유 문자열 또는 None."""
+    """연도 전체를 버려야 하는 주당 기준 불일치인가. 사유 문자열 또는 None.
+
+    **명시 주식수가 있는 연도에만 판정한다.** KR 재무비율에는 그 필드가 없어
+    현재는 휴면이다 -- 역산 주식수로 판정하면 저마진 연도가 통째로 지워진다.
+    """
     shares = year_shares(year_data)
     if not shares or not ref_shares:
         return None

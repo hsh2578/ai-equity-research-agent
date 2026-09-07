@@ -207,7 +207,8 @@ mc = derive_metrics(cpi_obs, cpi_spec, asof='2026-09-07')
 eq(mc['latest_date'], '2026-07-01', 'CPI 최신 관측 월 (월별 시계열)')
 close(mc['latest'], 332.813, 'CPI 최신 지수값', tol=0.001)
 truthy('yoy' in mc, 'CPI 는 yoy 필드를 낸다')
-cpi_map = {o['date']: float(o['value']) for o in fix('fred_CPIAUCSL.json')['observations']}
+cpi_map = {o['date']: float(o['value']) for o in fix('fred_CPIAUCSL.json')['observations']
+           if o['value'] != '.'}
 close(mc['yoy'], (332.813 / cpi_map['2025-07-01'] - 1) * 100, 'CPI YoY = 12개월 전 지수 대비 %', tol=0.01)
 
 # 12개월 데이터가 없으면 조용히 0 으로 채우지 말고 None 을 남긴다
@@ -236,6 +237,18 @@ truthy(any('지연' in x or '오래' in x for x in w), '일별 시계열 8개월
 spec_m = {'label': 'CPI', 'unit': 'idx', 'freq': 'M', 'change_mode': 'pct', 'sane': (0.0, 1000.0)}
 w = sanity_warnings('cpi', {'latest': 332.8, 'latest_date': '2026-07-01'}, spec_m, asof='2026-09-07')
 eq(w, [], '월별 시계열 2개월 시차는 정상 (경고 없음)')
+
+# 게시 주기가 느린 시리즈는 spec 에서 신선도 기준을 늘릴 수 있다
+# (DTWEXBGS 달러인덱스는 일별인데 FRED 게시가 주 1회라 10일 기준이면 매주 거짓 경고)
+spec_slow = dict(spec_diff, stale_days=21)
+w = sanity_warnings('dollar_index', {'latest': 4.0, 'latest_date': '2026-08-28'},
+                    spec_slow, asof='2026-09-08')
+eq(w, [], 'stale_days 오버라이드 시 11일 지연은 경고 없음')
+w = sanity_warnings('dollar_index', {'latest': 4.0, 'latest_date': '2026-07-01'},
+                    spec_slow, asof='2026-09-08')
+truthy(any('지연' in x for x in w), 'stale_days 오버라이드해도 69일 지연은 경고')
+eq(US_SERIES['dollar_index'].get('stale_days'), 21,
+   'US dollar_index 는 주 1회 게시라 stale_days=21')
 
 
 # ============================================================================
@@ -287,6 +300,36 @@ eq(snap2['ok'], False, '전건 실패 스냅샷 ok=False')
 
 # JSON 직렬화 가능해야 파일로 남길 수 있다
 truthy(json.dumps(snap, ensure_ascii=False, default=str), '스냅샷 JSON 직렬화 가능')
+
+# 부분 조회는 subset=True 로 표시되어 전체 스냅샷 파일을 덮어쓰지 않는다
+eq(snap['subset'], True, '일부 지표만 조회하면 subset=True')
+full = build_snapshot('US', fetch=fake_fetch_us, asof='2026-09-07')
+eq(full['subset'], False, '전체 조회면 subset=False')
+eq(len(full['series']), len(US_SERIES), '전체 조회는 카탈로그 전건')
+truthy(md.build_snapshot('US', aliases=['ust10y'], fetch=fake_fetch_us,
+                         asof='2026-09-07')['subset'], '단건 조회도 subset=True')
+
+# save_snapshot 은 지정 경로에 원자적으로 쓰고 다시 읽힌다
+import tempfile
+with tempfile.TemporaryDirectory() as td:
+    sp = md.save_snapshot(snap, os.path.join(td, 'sub', '_macro_test.json'))
+    truthy(os.path.exists(sp), 'save_snapshot 파일 생성 (하위 폴더 자동 생성)')
+    back = json.load(open(sp, encoding='utf-8'))
+    eq(back['series']['ust10y']['latest'], 4.77, '저장 후 재로드 값 보존')
+    truthy(back.get('_collected_at'), '저장본에 _collected_at 보존')
+    falsy(os.path.exists(sp + '.tmp'), '임시 파일이 남지 않음')
+
+# 알 수 없는 별칭은 조용히 무시하지 않고 즉시 에러
+try:
+    build_snapshot('US', aliases=['ust10y', '없는지표'], fetch=fake_fetch_us)
+    _failed.append('알 수 없는 별칭 -> ValueError (실제: 예외 없음)')
+except ValueError:
+    _passed += 1
+try:
+    build_snapshot('JP', fetch=fake_fetch_us)
+    _failed.append('지원하지 않는 country -> ValueError (실제: 예외 없음)')
+except ValueError:
+    _passed += 1
 
 
 # ============================================================================

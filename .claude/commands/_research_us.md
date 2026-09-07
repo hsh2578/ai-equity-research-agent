@@ -1,4 +1,4 @@
-# 미국 종목 리서치 파이프라인 (v5.5)
+# 미국 종목 리서치 파이프라인 (v5.6)
 
 `/research {TICKER}` 로 **영문 티커**가 들어왔을 때 이 파일을 따른다.
 `research.md` 는 공통 뼈대(서술 원칙 / 퀀트 프로토콜 / analysis.json 스키마 /
@@ -32,6 +32,35 @@ $347.81 / 시총 $567B 로 stale 하게 방치돼 있었다 (실시간 $477.57 /
 
 **리포트 본문은 KR/US 무관하게 전부 한글로 쓴다** (TSLA v1 영문 작성 사고 방지).
 고유명사(Tesla, Megapack), 재무 약어(OPM, EPS, EBITDA), 통화($)만 원문 유지.
+
+---
+
+## STEP 0.5: 소스 생사 확인 (v5.6 신설, 필수)
+
+```bash
+python scripts/source_health.py --only yfinance,sec
+```
+
+US 경로가 의존하는 것은 yfinance 와 SEC EDGAR 다. 수집을 시작하기 전에 확인한다.
+**응답이 왔다고 살아있다고 보지 않는다** -- 에러 페이지 감지 + 서로 다른 두 종목 대조 +
+일시 5xx 재시도까지 한 뒤 판정한다.
+
+2026-09 에 KR 쪽 FnGuide 가 URL 변경으로 죽었는데 예외를 삼켜 몇 달간 아무도 몰랐다.
+US 소스도 같은 식으로 죽을 수 있다.
+
+---
+
+## STEP 0.6: 매크로 실측 (v5.6 신설)
+
+```bash
+python scripts/macro_data.py US
+```
+
+-> `data/_macro_US.json`. 정책금리/10년물/장단기 스프레드/CPI/실업률/달러인덱스/WTI/VIX 를
+FRED 에서 실측으로 받는다 (`FRED_API_KEY` 는 통합 `.env` 에 있다).
+
+지금까지 s04 의 거시 서술은 전부 WebSearch 였다. 금리·물가·유가를 인용할 때는
+**관측일을 함께 쓴다** (v5.4 규칙 16 의 매크로판).
 
 ---
 
@@ -148,7 +177,7 @@ python scripts/evidence_scan.py {TICKER}
    `quarterly` 표를 손으로 채울 때 역산 결과를 다시 확인한다.
 
 2. **분기 라벨에 반드시 연도를 붙인다.** `Q3'25`, `1Q26` 형식.
-   `Q1`, `Q2` 처럼 연도 없는 라벨은 `verify_numbers_us.py` B13 이 FAIL 을 낸다
+   `Q1`, `Q2` 처럼 연도 없는 라벨은 `verify_numbers_us.py` B20 이 FAIL 을 낸다
    (어느 연도인지 특정할 수 없어 누락 검증이 불가능하다).
 
 3. **GAAP 과 Non-GAAP 을 같은 행에 섞지 않는다.** 회사 발표 Non-GAAP EPS 와
@@ -174,12 +203,12 @@ python scripts/evidence_scan.py {TICKER}
 
 ```bash
 # 단일 메시지 동시 호출
-python scripts/verify_numbers_us.py {TICKER}   # B1~B19
+python scripts/verify_numbers_us.py {TICKER}   # B1~B20
 python scripts/verify_style.py {TICKER}        # C1~C20 (KR/US 공통)
 python scripts/verify_facts.py {TICKER}        # D1~D6 (KR/US 공통)
 ```
 
-**B 블록 (US, v5.5 기준 19개)**
+**B 블록 (US, v5.6 기준)**
 
 | 항목 | 내용 |
 |---|---|
@@ -188,7 +217,7 @@ python scripts/verify_facts.py {TICKER}        # D1~D6 (KR/US 공통)
 | B10 | R/R 내부 일관성 |
 | **B11** | **컨센 정합 4종** (v5.5): forward_eps vs 컨센 / forward_per 역산 / 리비전 방향 vs 본문 / target_base vs 컨센 상단 |
 | B12 | Stock split 자동 감지 |
-| **B13** | **분기 누락** (v5.5, KR 과 공용 모듈) |
+| **B20** | **분기 누락** (v5.5, KR 과 공용 모듈). 기존 B13(GAAP/Non-GAAP)과 id 충돌이라 v5.6 에서 개명 |
 | B14 | EPS x 발행주식 = 순이익 산술 |
 | B15 | DCF vs Base 괴리 50%+ 경고 |
 | B17 | 본문 FCF/순부채/시총 변종 감지 |

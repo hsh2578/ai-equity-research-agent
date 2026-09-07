@@ -19,7 +19,9 @@ import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 
-from verify_numbers import band_gate, band_claims_in, BAND_CLAIM_WORDS   # noqa: E402
+from verify_numbers import (   # noqa: E402
+    band_gate, band_claims_in, BAND_CLAIM_WORDS, BAND_DISCLAIMERS,
+)
 
 _passed = 0
 _failed = []
@@ -90,6 +92,20 @@ truthy('z-score' in band_claims_in(CLAIM), "'z-score' 감지")
 truthy('σ' in band_claims_in('현재 +1.9σ'), "시그마 표기 감지")
 for w in ['5년 평균', '역사적 평균', '밴드 상단', '밴드 하단', 'z-score', 'σ']:
     truthy(w in BAND_CLAIM_WORDS, f"US B19 와 같은 표현 '{w}' 를 사전에 포함")
+
+# --- 저자가 스스로 밴드를 무효 선언한 문장은 단정이 아니다 (한국콜마 실측 문장) ---
+DISCLAIMED = ('후행 PER은 30.52배다. 5년 평균 74.39배는 2022년 순손실 구간의 왜곡 때문에 '
+              '의미가 없으므로 비교 기준으로 쓰지 않는다.')
+eq(band_claims_in(DISCLAIMED), [], "무효 선언과 함께 쓴 '5년 평균' 은 단정이 아니다")
+status, detail = band_gate(band_bad, DISCLAIMED)
+eq(status, 'PASS', "밴드를 못 쓴다고 밝힌 리포트는 통과 (정직한 문장을 지우게 만들지 않는다)")
+
+# 같은 표현을 다른 곳에서 단정으로 쓰면 여전히 FAIL
+_FILLER = ' 부문별 매출은 국내 55%, 중국 20%, 북미 15% 로 구성되며 화장품 ODM 비중이 높다.' * 2
+MIXED = DISCLAIMED + _FILLER + ' 한편 현재 주가는 5년 평균 대비 30% 저평가 구간이다.'
+truthy('5년 평균' in band_claims_in(MIXED), "무효 선언 없는 등장이 하나라도 있으면 단정으로 센다")
+eq(band_gate(band_bad, MIXED)[0], 'FAIL', "혼재 시 FAIL")
+truthy(BAND_DISCLAIMERS, "무효 선언 사전이 비어 있지 않다")
 
 print(f"\n{'=' * 60}")
 print(f"  verify_numbers B23 밴드 게이트 테스트: {_passed}개 통과 / {len(_failed)}개 실패")

@@ -13,13 +13,15 @@ import subprocess
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SUITES = ['test_quarter_labels.py', 'test_decision_log.py', 'test_guard_hook.py',
+SUITES = ['test_dart_quarterly.py', 'test_quarter_labels.py', 'test_decision_log.py', 'test_guard_hook.py',
           'test_wf_chart_planner.py', 'test_wf_charts.py', 'test_rs_table.py',
           'test_fdr_band_us.py', 'test_evidence_scan.py', 'test_us_consensus.py',
           'test_fetch_broker_reports.py',
           'test_peer_snapshot_us.py', 'test_build_snapshot.py',
           'test_verify_check_ids.py', 'test_market_cap_parse.py',
-          'test_fnguide_data.py', 'test_fnguide_header.py']
+          'test_fnguide_data.py', 'test_fnguide_header.py',
+          'test_macro_data.py',
+          'test_fdr_band.py', 'test_verify_band_gate.py', 'test_peer_snapshot.py']
 PYTEST_DIRS = ['broker']
 
 fails = []

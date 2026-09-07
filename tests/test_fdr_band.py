@@ -101,21 +101,21 @@ falsy(any(p > 40 for p in res['per_series']), "가짜 배수(46배)가 시계열
 # KIS 재무비율이 준 bps 필드가 있으면 그것이 정답
 near(year_bps({'bps': 60099.0, 'total_equity': 16856, 'eps': 8682.0, 'net_income': 2434}),
      60099.0, "bps 필드가 있으면 그것을 우선")
-# bps 가 없으면 자기자본(억원) / 그 해 주식수(NI/EPS 역산)
-#   풍산 2021: 2434억*1e8/8682원 = 28.03M주, 16856억*1e8/28.03M = 60,135원
-near(year_bps({'total_equity': 16856, 'eps': 8682.0, 'net_income': 2434}),
-     16856 * EOK / (2434 * EOK / 8682.0), "bps 없으면 그 해 주식수로 역산")
+# bps 가 없으면 자기자본(억원) / 그 해 **명시** 주식수
+near(year_bps({'total_equity': 16856, 'shares_outstanding': 28_030_000}),
+     16856 * EOK / 28_030_000, "bps 없으면 그 해 명시 주식수로 역산")
 eq(year_bps({'total_equity': 16856}), None, "주식수를 못 구하면 BPS 없음 (추정 금지)")
 eq(year_bps({}), None, "빈 연도는 BPS 없음")
 
-near(year_shares({'net_income': 2434, 'eps': 8682.0}), 2434 * EOK / 8682.0,
-     "주식수 = 순이익(억원)*1e8 / EPS(원)", tol=1e-3)
 near(year_shares({'shares_outstanding': 28030000, 'net_income': 2434, 'eps': 8682.0}),
-     28030000.0, "명시 주식수가 있으면 그것을 우선")
-eq(year_shares({'shares_outstanding': 0, 'net_income': 0, 'eps': 8682.0}), None,
-   "주식수 0 / 순이익 0 은 무효")
-eq(year_shares({'net_income': -500, 'eps': -1800.0}), None,
-   "적자 연도는 역산 주식수를 만들지 않는다")
+     28030000.0, "명시 주식수를 그대로 쓴다")
+eq(year_shares({'shares_outstanding': 0}), None, "주식수 0 은 무효")
+# 순이익/EPS 역산은 하지 않는다. KR 은 연결 순이익(비지배 포함)을 지배주주 EPS 로
+# 나누는 꼴이라 지주사/저마진 연도가 통째로 어긋난다 (실측: 두산 4.2배, 에스엠 0.04배).
+eq(year_shares({'net_income': 2434, 'eps': 8682.0}), None,
+   "순이익/EPS 역산 주식수를 만들지 않는다")
+eq(year_bps({'total_equity': 16856, 'net_income': 2434, 'eps': 8682.0}), None,
+   "역산 주식수로 BPS 를 만들지 않는다")
 
 # 4. bps 도 없고 역산도 못 하면 PBR 밴드를 만들지 않고 warnings 에 남긴다
 fin_noshares = {
@@ -157,6 +157,22 @@ fin_buyback = {
 res = build_series(closes, fin_buyback, ref_shares=20_000_000)
 eq(res['skipped'], {}, "정상 자사주 소각 기업은 어떤 연도도 버리지 않는다")
 eq(len(res['per_series']), 3, "정상 기업은 표본 보존")
+
+# 회귀: 명시 주식수가 없으면 기준 판정 자체를 하지 않는다.
+# (KR 실데이터 -- 에스엠 2024 순이익 8억/EPS 778원. 역산하면 ref 대비 0.04배라
+#  연도가 통째로 지워지고, PER 97배가 사라져 노이즈 밴드가 valid 로 뒤집혔다.)
+fin_sm = {
+    '2023': {'eps': 3664.0, 'bps': 30825.0, 'net_income': 827, 'total_equity': 9094},
+    '2024': {'eps': 778.0, 'bps': 29037.0, 'net_income': 8, 'total_equity': 8291},
+    '2025': {'eps': 15126.0, 'bps': 43793.0, 'net_income': 3594, 'total_equity': 13587},
+}
+sm_closes = {2023: 92100, 2024: 75600, 2025: 135000}   # 에스엠 실측 연말 종가
+res = build_series(sm_closes, fin_sm, ref_shares=22_894_737)
+eq(res['skipped'], {}, "저마진 연도를 기준 불일치로 오판해 버리지 않는다")
+eq(len(res['per_series']), 3, "분산이 큰 연도가 조용히 지워지지 않는다")
+eq(res['detail']['2024']['per'], 97.17, "PER 97배 이상치가 시계열에 남는다")
+mean, std, valid, notes = band_stats(res['per_series'], 'PER')
+eq(valid, False, "이상치가 남아 있으므로 CV 가드가 밴드를 무효로 판정한다")
 
 # ref_shares 없이도 동작 (연도 간 기준 검증만 생략)
 res = build_series(closes, fin_buyback, ref_shares=None)

@@ -2,19 +2,31 @@
 STEP 2.3: Peer 시총/PER/PBR KIS API 실시간 일괄 조회
 
 사용법:
-    python scripts/peer_snapshot.py {종목명} {업종키} [peer1_code peer2_code ...]
+    python scripts/peer_snapshot.py {종목명} [업종키] [name:code ...]
+    python scripts/peer_snapshot.py {종목명} --peers "고려아연:010130,LS:006260"
 
-업종키: kpop, auto, semicon, battery, shipbuild, finance, pharma, retail, it, default
+업종키: kpop, auto, semicon, battery, shipbuild, finance, pharma, retail, it, air, default
+
+v5.7 CLI 가드
+-------------
+초판은 `sys.argv[2]` 를 무조건 업종키로 읽어 `--peers` 같은 플래그가 업종키로
+해석됐고, name:code 만 주면 그것이 업종키로 먹혔다. US 판(peer_snapshot_us.py)
+초판은 `args[args.index('--peers') + 1]` 을 직접 읽어 플래그가 마지막 인자일 때
+IndexError 로 죽었다. 두 문제를 같은 규칙으로 막는다:
+decision_log.flag_value (값 없음/다음 토큰이 또 다른 플래그면 default) 를 재사용하고,
+위치 인자는 ':' 유무로 업종키와 name:code 를 가른다.
 """
 import sys
 import io
 import os
 import json
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+if (getattr(sys.stdout, 'encoding', '') or '').lower().replace('-', '') != 'utf8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 
-from kis_api import get_current_price
+from decision_log import flag_value
 
 
 # 업종별 기본 Peer 템플릿
@@ -33,16 +45,64 @@ PEER_TEMPLATES = {
 }
 
 
-def main(stock_name, industry_key='default', extra_peers=None):
+def parse_args(args):
+    """CLI 인자 -> (종목명, 업종키, [name:code, ...]).
+
+    args 는 sys.argv[1:]. 플래그가 마지막 인자여도 IndexError 를 내지 않는다
+    (decision_log.flag_value 와 동일 규칙).
+    """
+    args = list(args or [])
+    stock_name = args[0] if args and not args[0].startswith('--') else None
+    rest = args[1:] if stock_name is not None else args
+
+    # --peers 값은 flag_value 가 안전하게 꺼낸다. 그 값을 위치 인자로 다시 세면 안 되므로
+    # 소비한 인덱스를 기록해 둔다.
+    peers_csv = flag_value(rest, '--peers')
+    consumed = set()
+    if '--peers' in rest:
+        i = rest.index('--peers')
+        consumed.add(i)
+        if peers_csv is not None:
+            consumed.add(i + 1)
+
+    industry_key = None
+    extra = []
+    for i, tok in enumerate(rest):
+        if i in consumed or tok.startswith('--'):
+            continue
+        if ':' in tok:
+            extra.append(tok)
+        elif industry_key is None:
+            industry_key = tok
+
+    for chunk in (peers_csv or '').split(','):
+        chunk = chunk.strip()
+        if ':' in chunk:
+            extra.append(chunk)
+
+    return stock_name, industry_key or 'default', extra
+
+
+def resolve_peers(industry_key, extra_peers):
+    """업종 템플릿 + name:code 인자를 병합한 {이름: 코드}. 인자가 우선."""
     peers = dict(PEER_TEMPLATES.get(industry_key, {}))
-    if extra_peers:
-        for p in extra_peers:
-            if ':' in p:
-                name, code = p.split(':', 1)
+    for p in extra_peers or []:
+        if ':' in p:
+            name, code = p.split(':', 1)
+            name, code = name.strip(), code.strip()
+            if name and code:
                 peers[name] = code
+    return peers
+
+
+def main(stock_name, industry_key='default', extra_peers=None):
+    from kis_api import get_current_price
+
+    peers = resolve_peers(industry_key, extra_peers)
 
     if not peers:
         print(f"[WARN] Peer 목록 없음. 업종키 '{industry_key}' 확인 또는 name:code 인자 제공.")
+        print("       예: python scripts/peer_snapshot.py 풍산 --peers \"고려아연:010130,LS:006260\"")
         return 1
 
     os.makedirs(f'data/{stock_name}', exist_ok=True)
@@ -73,10 +133,9 @@ def main(stock_name, industry_key='default', extra_peers=None):
 
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
+    stock_name, industry_key, extra = parse_args(sys.argv[1:])
+    if not stock_name:
         print("usage: python scripts/peer_snapshot.py {종목명} [업종키] [name:code ...]")
+        print("       python scripts/peer_snapshot.py {종목명} --peers \"이름:코드,이름2:코드2\"")
         sys.exit(1)
-    stock_name = sys.argv[1]
-    industry_key = sys.argv[2] if len(sys.argv) > 2 else 'default'
-    extra = sys.argv[3:] if len(sys.argv) > 3 else None
     sys.exit(main(stock_name, industry_key, extra))

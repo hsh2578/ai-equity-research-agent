@@ -30,11 +30,38 @@ if (getattr(sys.stdout, 'encoding', '') or '').lower().replace('-', '') != 'utf8
 BAND_CLAIM_WORDS = ['5년 평균', '역사적 평균', '5Y 평균', '역사적 밴드',
                     '밴드 상단', '밴드 하단', 'z-score', 'σ']
 
+# 표현 바로 옆에서 저자가 스스로 "이 밴드는 못 쓴다" 고 밝힌 경우는 단정이 아니다.
+# 이걸 FAIL 로 잡으면 정직한 문장을 지우도록 유도하게 된다 -- 게이트의 취지와 반대다.
+# (한국콜마 실측: "5년 평균 74.39배는 2022년 순손실 구간의 왜곡 때문에 의미가 없으므로
+#  비교 기준으로 쓰지 않는다" 를 B23 이 FAIL 로 잡던 문제)
+BAND_DISCLAIMERS = ['의미가 없', '의미 없', '쓰지 않', '쓸 수 없', '왜곡', '해석 무의미',
+                    '밴드 무효', '참고만', '신뢰할 수 없', '무의미']
+_DISCLAIMER_WINDOW = 60
+
 
 def band_claims_in(text):
-    """본문에 쓰인 밴드 단정 표현 목록."""
+    """본문에 쓰인 밴드 단정 표현 목록.
+
+    표현이 나온 자리마다 주변 창에서 저자의 무효 선언을 찾고, 모든 등장이
+    무효 선언과 함께라면 단정으로 세지 않는다.
+    """
     text = text or ''
-    return [w for w in BAND_CLAIM_WORDS if w in text]
+    claimed = []
+    for w in BAND_CLAIM_WORDS:
+        spots, asserted = 0, 0
+        start = 0
+        while True:
+            i = text.find(w, start)
+            if i < 0:
+                break
+            spots += 1
+            near = text[max(0, i - _DISCLAIMER_WINDOW): i + len(w) + _DISCLAIMER_WINDOW]
+            if not any(dc in near for dc in BAND_DISCLAIMERS):
+                asserted += 1
+            start = i + len(w)
+        if spots and asserted:
+            claimed.append(w)
+    return claimed
 
 
 def band_gate(band, text):
