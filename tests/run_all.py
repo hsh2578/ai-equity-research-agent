@@ -13,15 +13,11 @@ import subprocess
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SUITES = ['test_dart_quarterly.py', 'test_quarter_labels.py', 'test_decision_log.py', 'test_guard_hook.py',
-          'test_wf_chart_planner.py', 'test_wf_charts.py', 'test_rs_table.py',
-          'test_fdr_band_us.py', 'test_evidence_scan.py', 'test_us_consensus.py',
-          'test_fetch_broker_reports.py',
-          'test_peer_snapshot_us.py', 'test_build_snapshot.py',
-          'test_verify_check_ids.py', 'test_market_cap_parse.py',
-          'test_fnguide_data.py', 'test_fnguide_header.py',
-          'test_macro_data.py',
-          'test_fdr_band.py', 'test_verify_band_gate.py', 'test_peer_snapshot.py']
+# 스위트는 **자동 탐색**한다. 목록을 손으로 관리하면 새로 쓴 테스트가 조용히 안 돌고,
+# "22/22 통과" 라는 문구만 남는다 -- 돌지 않은 테스트의 PASS 는 아무 의미가 없다
+# (v5.6 규칙 5 와 같은 이유). 순서를 고정해 출력이 흔들리지 않게 정렬만 한다.
+SUITES = sorted(f for f in os.listdir(HERE)
+                if f.startswith('test_') and f.endswith('.py'))
 PYTEST_DIRS = ['broker']
 
 fails = []

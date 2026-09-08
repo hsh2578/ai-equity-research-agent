@@ -38,6 +38,80 @@ except Exception:
         return {}
 
 try:
+    from fnguide_data import get_financial_data as get_fnguide_financial
+except Exception:
+    def get_fnguide_financial(code):
+        return {}
+
+
+# FnGuide 연간 손익 키 -> years_data 키
+_FNG_INCOME_MAP = [
+    ("revenue", "revenue"),
+    ("gross_profit", "gross_profit"),
+    ("operating_income", "op_income"),
+    ("net_income", "net_income"),
+]
+
+
+def merge_fnguide_income(years_data, fng_annual, shares=None):
+    """KIS 손익이 비어 있는 연도를 FnGuide 연간 손익으로 채운다.
+
+    KIS 재무 API 가 종목에 따라 **전 항목 0행**을 조용히 반환한다(에프에스티 036810 실측).
+    그러면 financials[연도] 의 매출/영업이익/순이익이 전부 None 이 되고,
+    스냅샷의 '연간 실적' 표가 통째로 '미수집' 이 되어 5년 실적을 한 줄도 못 쓴다.
+
+    - 이미 값이 있는 항목은 덮어쓰지 않는다 (KIS/DART 가 1차 출처)
+    - years_data 에 없는 연도는 새로 만들지 않는다 (대차/비율이 없는 유령 연도 방지)
+    - 채운 연도에는 `_income_source` 를 남긴다
+    - 단위는 FnGuide 가 이미 억원이므로 변환하지 않는다
+
+    반환: 채운 연도 목록 (정렬)
+    """
+    if not years_data or not fng_annual:
+        return []
+
+    def by_year(series):
+        out = {}
+        for period, val in (series or {}).items():
+            out[str(period)[:4]] = val
+        return out
+
+    series = {dst: by_year(fng_annual.get(src)) for src, dst in _FNG_INCOME_MAP}
+    ctrl = by_year(fng_annual.get("net_income_controlling"))
+
+    filled = []
+    for y, d in years_data.items():
+        touched = False
+        for _, dst in _FNG_INCOME_MAP:
+            if d.get(dst) is None and series[dst].get(y) is not None:
+                d[dst] = series[dst][y]
+                touched = True
+        if not touched:
+            continue
+
+        rev = d.get("revenue")
+        if rev:
+            for num_key, ratio_key in (("cogs", "cogs_ratio"), ("op_income", "opm"),
+                                       ("net_income", "npm")):
+                if d.get(ratio_key) is None and d.get(num_key) is not None:
+                    d[ratio_key] = round(d[num_key] / rev * 100, 1)
+
+        if d.get("eps") is None and shares:
+            ni = ctrl.get(y)
+            if ni is None:
+                ni = series["net_income"].get(y)
+            if ni is not None:
+                # **현재** 주식수로 나눈 근사치다. 과거 연도에 증자/소각이 있었으면
+                # 실제 그 해 EPS 와 다르다. PER 밴드에 쓰기 전에 이 표시를 확인할 것.
+                d["eps"] = round(ni * 1e8 / float(shares))
+                d["_eps_source"] = "fnguide_ni / 현재주식수 (근사)"
+
+        d["_income_source"] = "fnguide"
+        filled.append(y)
+
+    return sorted(filled)
+
+try:
     from naver_finance import (
         get_all_naver_data,
         get_balance_detail,
@@ -361,6 +435,24 @@ def build_summary(stock_name: str, stock_code: str, data_dir: str) -> dict:
             y = str(period)[:4]
             if y in years_data and years_data[y].get(kis_key) is None:
                 years_data[y][kis_key] = round(val)
+
+    # 손익계산서 FnGuide fallback (KIS 재무 API 가 조용히 빈 배열을 줄 때)
+    missing_income = [y for y, d in years_data.items() if d.get("revenue") is None]
+    if missing_income:
+        print(f"  [WARN] 손익 결측 연도 {len(missing_income)}개 ({', '.join(sorted(missing_income))})"
+              f" - FnGuide 연간 실적으로 보완 시도")
+        try:
+            fng_ann = (get_fnguide_financial(stock_code) or {}).get("annual") or {}
+        except Exception as e:
+            fng_ann = {}
+            print(f"  [WARN] FnGuide 연간 실적 조회 실패: {type(e).__name__}: {e}")
+        shares = price.get("시가총액") and price.get("현재가") and \
+            round(price["시가총액"] * 1e8 / price["현재가"])
+        filled = merge_fnguide_income(years_data, fng_ann, shares=shares)
+        if filled:
+            print(f"  [OK] FnGuide 로 {len(filled)}개 연도 손익 보완: {', '.join(filled)}")
+        else:
+            print("  [WARN] FnGuide 로도 보완 실패 - 연간 실적 수치 인용 금지")
 
     # 2026E (또는 미래 연도) 분리: 손익 데이터가 없으면 years_data에서 제거하고
     # consensus_year 별도 저장 (forward 섹션에서만 참조)

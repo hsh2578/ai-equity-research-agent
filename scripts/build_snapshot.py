@@ -48,6 +48,33 @@ def load(path):
         return None
 
 
+def income_divisor(market):
+    """연간 손익을 표시 단위로 바꾸는 나눗수.
+
+    KR: `financial_summary.eok()` 가 이미 억원으로 저장한다
+        ("KIS는 이미 '억' 단위로 반환. 그대로 반올림.") -> 나누지 않는다.
+        여기서 1e8 로 한 번 더 나눠 풍산 5.05조 매출이 표에 '0' 으로 찍혔다.
+    US: `financial_summary_us` 가 raw USD 를 담는다 -> $B 로 1e9.
+    """
+    return 1e9 if market == 'US' else 1
+
+
+def income_unit_label(market):
+    return '$B' if market == 'US' else '억원'
+
+
+def format_income(v, market):
+    """연간 손익 한 칸을 표시 문자열로. 결측은 '미수집'.
+
+    소수 2자리를 쓰는 이유: fmt 는 1000 이상이면 콤마 + 정수로 찍으므로
+    자릿수는 작은 값에만 영향을 준다. 여기서 0 자리로 자르면
+    에프에스티 2025 영업이익 -5.47억이 '-5' 가 되어 적자 규모가 뭉개진다.
+    """
+    if v is None:
+        return MISSING
+    return fmt(float(v) / income_divisor(market), '', 2)
+
+
 def fmt(v, unit='', nd=2, comma=True):
     """숫자를 표에 넣을 문자열로. None 이면 명시적으로 '미수집'."""
     if v is None or v == '':
@@ -203,18 +230,15 @@ class Snapshot:
             self.gap('연간 실적', '매출/영업이익/순이익/EPS 시계열 인용 금지')
             return
         years = sorted(y for y in fins if str(y).isdigit())
-        unit = '($)' if self.market == 'US' else '(억원)'
-        div = 1e8 if self.market == 'KR' else 1e9
-        ulab = '억원' if self.market == 'KR' else '$B'
+        ulab = income_unit_label(self.market)
         rows = []
         for key, label in [('revenue', f'매출({ulab})'), ('op_income', f'영업이익({ulab})'),
                            ('net_income', f'순이익({ulab})'), ('eps', 'EPS'), ('opm', 'OPM(%)')]:
             row = [label]
             for y in years:
                 v = fins[y].get(key)
-                if key in ('revenue', 'op_income', 'net_income') and v is not None:
-                    v = float(v) / div
-                    row.append(fmt(v, '', 0 if self.market == 'KR' else 1))
+                if key in ('revenue', 'op_income', 'net_income'):
+                    row.append(format_income(v, self.market))
                 else:
                     row.append(fmt(v))
             rows.append(row)
