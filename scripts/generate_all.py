@@ -76,6 +76,36 @@ def parse_market_cap(raw):
     return float(m.group(0)) if m else None
 
 
+def consensus_columns(fin_headers):
+    """커버 '컨센서스 요약' 이 쓸 두 열을 고른다.
+
+    반환: (확정열_idx, 비교열_idx, 비교열이_추정인가) 또는 None(비교 불가).
+
+    추정 열이 없을 때 예전 코드는 `fwd_idx = last_actual` 로 덮어써서 **같은 열을
+    두 번** 썼다. 그 결과 커버에 "매출 2,946 -> 2,946 / EPS -556 -> -556" 이 찍히고
+    라벨은 "TTM 실적 / TTM 추정" 이었다 -- 컨센서스를 수집하지 못한 종목마다
+    **없는 예측이 첫 화면에** 올라간 셈이다(에프에스티 036810 실측).
+    결측을 마지막 실적으로 메우지 않는다 (v5.6 규칙 5).
+    """
+    if not fin_headers or len(fin_headers) < 3:
+        return None
+    cols = list(range(1, len(fin_headers)))
+    fwd = None
+    for i in cols:
+        h = str(fin_headers[i]).strip().upper()
+        # 연도 뒤에 붙은 E/F 만 추정으로 본다. 'TTM' 같은 라벨을 오판하지 않는다.
+        if re.search(r'\d\s*[EF]$', h):
+            fwd = i
+            break
+    if fwd is not None:
+        actual = fwd - 1
+        if actual < 1:
+            return None
+        return (actual, fwd, True)
+    # 추정 열이 없다 -> 직전 확정과 마지막 확정을 비교한다. '추정' 이라 부르지 않는다.
+    return (cols[-2], cols[-1], False)
+
+
 def md_table_to_html(txt, table_class=""):
     """섹션 본문 안의 마크다운 테이블을 HTML 테이블로 변환. 나머지는 <br>로 join."""
     lines = txt.split('\n')
@@ -1562,19 +1592,11 @@ def _generate_summary_v2(data, output_dir):
     # ----- 컨센서스 요약 block (재무 2년치 발췌 -- 실적/추정 명확화) -----
     cons_rows_html = ''
     cons_subtitle = ''
-    if fin_headers and fin_rows:
+    _cons_is_forward = False
+    if fin_headers and fin_rows and consensus_columns(fin_headers):
         # header에서 확정 마지막 idx + Forward 첫 idx 찾기
-        last_actual = len(fin_headers) - 1
-        fwd_idx = None
-        for i in range(1, len(fin_headers)):
-            h = str(fin_headers[i]).upper()
-            if 'E' in h or 'F' in h:
-                fwd_idx = i
-                if last_actual == len(fin_headers) - 1:
-                    last_actual = i - 1
-                break
-        if fwd_idx is None:
-            fwd_idx = last_actual
+        last_actual, fwd_idx, is_forward = consensus_columns(fin_headers)
+        _cons_is_forward = is_forward
 
         y_act = str(fin_headers[last_actual]) if last_actual < len(fin_headers) else ""
         y_fwd = str(fin_headers[fwd_idx]) if fwd_idx < len(fin_headers) else ""
@@ -1587,7 +1609,11 @@ def _generate_summary_v2(data, output_dir):
         elif "$" in str(rev_header) or "B" in str(rev_header).upper(): unit_match = "$B"
 
         # 서브타이틀: "2025 실적 / 2026E 추정"
-        cons_subtitle = f'<div style="font-size:6.5pt; color:#8593aa; letter-spacing:1.5px; margin-bottom:1.5mm; text-align:center;">{html_lib.escape(y_act)} 실적 &nbsp;/&nbsp; {html_lib.escape(y_fwd)} 추정 &nbsp;<span style="color:#b8922e;">({unit_match})</span></div>' if unit_match else f'<div style="font-size:6.5pt; color:#8593aa; letter-spacing:1.5px; margin-bottom:1.5mm; text-align:center;">{html_lib.escape(y_act)} / {html_lib.escape(y_fwd)}</div>'
+        _unit = f' &nbsp;<span style="color:#b8922e;">({unit_match})</span>' if unit_match else ''
+        _kind = '추정' if is_forward else '실적'
+        cons_subtitle = (f'<div style="font-size:6.5pt; color:#8593aa; letter-spacing:1.5px; '
+                         f'margin-bottom:1.5mm; text-align:center;">{html_lib.escape(y_act)} 실적 '
+                         f'&nbsp;/&nbsp; {html_lib.escape(y_fwd)} {_kind}{_unit}</div>')
 
         # 핵심 5개 행 (주주(최대/외인) 는 데이터 없어 제외)
         keywords = [("매출", "매출"), ("영업이익", "영업이익"), ("순이익", "순이익"), ("EPS", "EPS"), ("OPM", "OPM")]
@@ -1604,6 +1630,7 @@ def _generate_summary_v2(data, output_dir):
     if not cons_rows_html:
         cons_rows_html = '<div class="dash-row"><span class="lbl">재무 데이터 없음</span><span class="val">—</span></div>'
 
+    cons_block_title = '컨센서스 요약' if _cons_is_forward else '실적 추이'
     cons_rows_html = cons_subtitle + cons_rows_html
 
     # ----- 주가 수익률 & Forward 밸류에이션 block -----
@@ -1647,7 +1674,7 @@ def _generate_summary_v2(data, output_dir):
       {stock_data_html}
     </div>
     <div class="dash-block">
-      <div class="dash-title">컨센서스 요약</div>
+      <div class="dash-title">{cons_block_title}</div>
       {cons_rows_html}
     </div>
     <div class="dash-block">
@@ -3451,18 +3478,9 @@ def _generate_detailed_v3(data, output_dir):
     else:
         fin_rows_c = fin_rows_raw
     cons_rows_html = ''
-    if fin_headers_c and fin_rows_c:
-        last_actual = len(fin_headers_c) - 1
-        fwd_idx = None
-        for i in range(1, len(fin_headers_c)):
-            h = str(fin_headers_c[i]).upper()
-            if 'E' in h or 'F' in h:
-                fwd_idx = i
-                if last_actual == len(fin_headers_c) - 1:
-                    last_actual = i - 1
-                break
-        if fwd_idx is None:
-            fwd_idx = last_actual
+    _cons_is_forward = False
+    if fin_headers_c and fin_rows_c and consensus_columns(fin_headers_c):
+        last_actual, fwd_idx, _cons_is_forward = consensus_columns(fin_headers_c)
 
         y_act = str(fin_headers_c[last_actual]) if last_actual < len(fin_headers_c) else ""
         y_fwd = str(fin_headers_c[fwd_idx]) if fwd_idx < len(fin_headers_c) else ""
@@ -3477,7 +3495,11 @@ def _generate_detailed_v3(data, output_dir):
                 if "(억)" in lbl0 or "억" in lbl0:
                     unit_match = "억원"; break
 
-        subtitle = f'<div style="font-size:6.5pt; color:#8593aa; letter-spacing:1.5px; margin-bottom:1.5mm; text-align:center;">{html_lib.escape(y_act)} 실적 &nbsp;→&nbsp; {html_lib.escape(y_fwd)} 추정 <span style="color:#b8922e;">({unit_match})</span></div>' if unit_match else ''
+        _kind_c = '추정' if _cons_is_forward else '실적'
+        subtitle = (f'<div style="font-size:6.5pt; color:#8593aa; letter-spacing:1.5px; '
+                    f'margin-bottom:1.5mm; text-align:center;">{html_lib.escape(y_act)} 실적 '
+                    f'&nbsp;→&nbsp; {html_lib.escape(y_fwd)} {_kind_c} '
+                    f'<span style="color:#b8922e;">({unit_match})</span></div>') if unit_match else ''
 
         for lbl, kw in [("매출", "매출"), ("영업이익", "영업이익"), ("순이익", "순이익"), ("EPS", "EPS"), ("OPM", "OPM")]:
             for row in fin_rows_c:
@@ -3489,6 +3511,7 @@ def _generate_detailed_v3(data, output_dir):
                     cons_rows_html += f'<div class="dash-row"><span class="lbl">{html_lib.escape(lbl)}</span><span class="val" style="font-size:7pt;">{html_lib.escape(v_act)} → {html_lib.escape(v_fwd)}</span></div>'
                     break
         cons_rows_html = subtitle + cons_rows_html
+    cons_block_title_c = '컨센서스 요약' if _cons_is_forward else '실적 추이'
     if not cons_rows_html:
         cons_rows_html = '<div class="dash-row"><span class="lbl">재무 데이터 없음</span><span class="val">—</span></div>'
 
@@ -3534,7 +3557,7 @@ def _generate_detailed_v3(data, output_dir):
       {stock_data_html}
     </div>
     <div class="dash-block">
-      <div class="dash-title">컨센서스 요약</div>
+      <div class="dash-title">{cons_block_title_c}</div>
       {cons_rows_html}
     </div>
     <div class="dash-block">
