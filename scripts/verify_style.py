@@ -192,6 +192,31 @@ def check_c8_english_directs(text):
     return len(en_units), en_units[:5]
 
 
+# 문장 끝 마침표 뒤에 올 수 있는 닫는 마크업/문장부호.
+# 한국어 리포트는 "**...했다.**" 처럼 강조 문장을 자주 쓰는데, 이걸 경계로
+# 인식하지 못하면 두 문장이 한 문장(100자+)으로 세어진다.
+_SENT_CLOSERS = '*`)]"' + "'" + '\u201d\u2019'
+_SENT_SPLIT = re.compile('[.!?][' + re.escape(_SENT_CLOSERS) + ']*\\s+|\\n+')
+
+
+def split_sentences(text, min_len=20):
+    """마크다운 산문을 문장 단위로 자른다.
+
+    기존 구현은 `[.!?]\\s+|[다요]\\.\\s+` 만 썼고 두 가지를 못 쪼갰다.
+
+    1. **줄바꿈**. 마크다운 리스트 항목·헤딩·출처줄이 각각 독립 단위인데
+       분리자에 개행이 없어 통째로 한 "문장" 이 됐다.
+    2. **닫는 마크업 뒤 마침표**. "**...벌어졌다.** 당기손익-..." 에서
+       `다.` 뒤가 공백이 아니라 `**` 라 경계로 인식되지 않았다.
+
+    실측(2026-09-08, 3종목 15개 섹션): 100자+ 문장 **60개 -> 30개**.
+    C9 실패의 절반이 서술 문제가 아니라 계측 문제였다.
+    이 게이트의 취지는 영문 직역체(진짜 긴 문장)를 잡는 것이지
+    마크다운 구조를 문장으로 세는 것이 아니다.
+    """
+    return [x.strip() for x in _SENT_SPLIT.split(text or '') if len(x.strip()) > min_len]
+
+
 def check_c9_long_sentence(text):
     """C9 (v4.16): 한 문장 100자+ 비율 (영문 직역체 신호)
     - 자연 한국어는 50자 이내 호흡
@@ -199,12 +224,10 @@ def check_c9_long_sentence(text):
     # 표/코드 제거
     prose = re.sub(r'\|.*?\|', '', text)
     prose = re.sub(r'```[\s\S]*?```', '', prose)
-    # 마침표/물음표/느낌표/콜론으로 문장 분리
-    sentences = re.split(r'[.!?]\s+|[다요]\.\s+', prose)
-    sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
+    sentences = split_sentences(prose)
     if not sentences:
         return 0, 0
-    long_sentences = [s for s in sentences if len(s) > 100]
+    long_sentences = [x for x in sentences if len(x) > 100]
     return len(long_sentences) / len(sentences) * 100, len(long_sentences)
 
 
