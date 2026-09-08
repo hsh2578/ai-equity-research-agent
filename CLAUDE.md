@@ -231,7 +231,7 @@ out_path = f'_tmp_r{idx}_{short}.txt'
 |---|---|
 | `build_snapshot.py` | **사전 그라운딩.** 흩어진 실측 파일을 `data/{종목}/_verified_snapshot.md` 한 장으로 묶는다. 없는 항목은 `미수집` 으로 명시해 **그 항목의 수치 주장 자체를 금지**한다. KR/US 자동 분기. STEP 3 진입 전 Read 의무 |
 | `evidence_scan.py` | **반증 의무 자동화.** DART 전문/증권사 리포트/SEC 본문에서 실측 증거와 **반증**을 원문 인용 + `file:line` 으로 추출. 회계 보일러플레이트/표 조각 자동 제외. 인용에 위치가 붙어 가짜 인용이 구조적으로 불가능 |
-| `decision_log.py` | **결정 로그 + alpha 사후평가.** `record` / `settle` / `pending` / `context` / `stats`. 벤치마크는 KODEX200·코스닥150 ETF (FDR 지수 심볼 KS11/KQ11 은 LOGOUT 으로 죽는다). 방향 인식 채점(BUY=alpha>0 / SELL=alpha<0 / HOLD=\|alpha\|<=10%) |
+| `decision_log.py` | **결정 로그 + alpha 사후평가.** `record` / `settle` / `pending` / `context` / `stats`. **`record` 반환을 구분해 읽는다** -- `REVISED`(등급·목표가가 바뀜, 채점에 영향) / `REFRESHED`(본문만 바뀜) / `SKIPPED`(동일) / `LOCKED`(정산 후 변경 금지). 초판은 블록 전체를 비교해 **논지 문장만 고쳐도 REVISED** 로 찍었다(삼성SDI 실측, 목표가 불변). '콜이 몇 번 바뀌었나'를 셀 때 글 수정이 섞이면 통계가 오염된다. 벤치마크는 KODEX200·코스닥150 ETF (FDR 지수 심볼 KS11/KQ11 은 LOGOUT 으로 죽는다). 방향 인식 채점(BUY=alpha>0 / SELL=alpha<0 / HOLD=\|alpha\|<=10%) |
 | `us_consensus.py` | **US 컨센 추이.** yfinance `eps_trend`/`eps_revisions`/`earnings_estimate`/`price_targets`/`upgrades_downgrades`. KR Wisereport 컨센 추이의 미국판, 추가 API 키 불필요 |
 | `fdr_band_us.py` | US 5년 PER/PBR 밴드. **밴드 유효성 게이트** 신설 -- 표본<3 또는 변동계수>0.6 이면 `per_band_valid: false` (AMD 실측 CV 0.66) |
 | `peer_snapshot_us.py` | US Peer 실시간 (업종키 10종 내장). 기존 인라인 임시코드를 스크립트로 고정 |
@@ -594,6 +594,36 @@ X >= (0.55 x T - S) / 0.45
 `> **한 줄:**` 3개를 s01 에 두고, **셋이 서로 다른 말**이어야 한다
 (중복은 dedup 이 못 잡는다 -- 마진 노트와 마무리 인용이 같은 뜻이면 겹친다).
 PDF 를 뽑으면 **커버 불릿 3개가 다 찼는지** 눈으로 확인한다.
+
+## ⚠️ 끝냈다고 말하기 전에 확인할 것 (v5.20)
+
+사용자가 "다 했어?"라고 물을 때마다 뭔가 나왔다. 공통점은
+**"지금 보고 있는 것"과 "봐야 할 범위"가 다르다**는 것이다.
+
+**① 새 검증기는 그날 안에 전 종목에 돌린다.** `section_rubric`(v5.15)을
+만들고 그 주 리포트 6건에만 돌렸다. 같은 주의 나머지 둘(LULU·에프에스티)에서
+**10 FAIL** 이 나왔는데, 그 상태로 "6개 전부 0 FAIL"이라고 보고했다.
+
+```bash
+for f in scripts/analysis_*.json; do
+  n=$(basename "$f" .json); n=${n#analysis_}
+  [ "$n" = "template" ] && continue
+  printf '%-18s ' "$n"; python scripts/{새검증기}.py "$n" 2>&1 | grep -E 'FAIL [0-9]+건'
+done
+```
+
+**② `_fix_*.py` 앵커는 위치를 먼저 확인한다.** 소제목 이름으로 앵커를 잡았다가
+투자포인트 내용이 산업분석에 들어갔다(LULU). "구조적 변화", "경쟁 구도" 같은
+이름은 이 스킬의 양식이라 **여러 섹션에 반복된다.** 넣기 전에 그 문자열이
+어느 섹션에 있는지 `sections` 를 순회해 확인한다.
+
+**③ 결정 로그는 PDF 직후 그 자리에서 남긴다.** 새 종목 둘을 빠뜨렸다.
+리포트가 맞았는지는 다시 읽어서 알 수 없고 **정산으로만** 알 수 있다 --
+v5.19 의 편향 질문도 이 로그가 쌓여야 답이 나온다.
+
+**④ 코드를 고쳤으면 스킬에도 반영했는지 본다.** 이 절이 그 사례다 --
+직전 커밋이 `decision_log` 를 고치고 리포트 둘을 정리했는데
+**스킬 파일은 하나도 안 건드렸다.**
 
 ## ⚠️ 검증기가 한쪽으로 밀 수 있다 (v5.19)
 
