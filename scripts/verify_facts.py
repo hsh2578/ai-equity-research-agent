@@ -167,6 +167,68 @@ def _match_peer(peer, name):
     return peer[min(cands)[2]]
 
 
+
+def consensus_target(stock_name):
+    """컨센서스 평균 목표주가. 세 곳을 순서대로 본다.
+
+    한 곳만 보면 대부분의 종목에서 값이 없어 검사가 조용히 SKIP 된다
+    (_wisereport.json 은 Chrome MCP 크롤링이 돌아야 생긴다).
+    반환: (값, 출처) 또는 (None, None)
+    """
+    import statistics
+
+    p = f'data/{stock_name}/_wisereport.json'
+    if os.path.exists(p):
+        try:
+            v = (json.load(open(p, encoding='utf-8')).get('consensus', {})
+                 or {}).get('avg_target_price')
+            if v:
+                return float(v), '_wisereport.json'
+        except Exception:                                      # noqa: BLE001
+            pass
+
+    p = f'data/{stock_name}/financial_summary.json'
+    if os.path.exists(p):
+        try:
+            fs = json.load(open(p, encoding='utf-8'))
+            cons = fs.get('consensus') or {}
+            v = (cons.get('summary') or {}).get('avg_target_price')
+            if v:
+                return float(v), 'financial_summary.summary'
+            tps = [b.get('target_price') for b in (cons.get('brokers') or [])
+                   if b.get('target_price')]
+            if tps:
+                return float(statistics.mean(tps)), f'financial_summary.brokers({len(tps)}인)'
+            v = ((fs.get('forward') or {}).get('target_mean')
+                 or (fs.get('yfinance') or {}).get('target_mean'))
+            if v:
+                return float(v), 'financial_summary.target_mean'
+        except Exception:                                      # noqa: BLE001
+            pass
+
+    p = f'data/{stock_name}/_us_consensus.json'
+    if os.path.exists(p):
+        try:
+            v = (json.load(open(p, encoding='utf-8')).get('price_targets')
+                 or {}).get('mean')
+            if v:
+                return float(v), '_us_consensus.json'
+        except Exception:                                      # noqa: BLE001
+            pass
+
+    return None, None
+
+
+_CONS_CMP_KWS = ['컨센서스 목표', '컨센 목표', '증권사 목표', '컨센서스 평균',
+                 '목표주가 평균', '컨센 대비', 'vs 컨센', '컨센서스와',
+                 '컨센서스 대비', '애널리스트 평균', '평균 목표주가']
+
+
+def consensus_gap_explained(text):
+    """컨센 목표가와 우리 목표가의 차이를 본문이 설명했는가."""
+    return any(kw in text for kw in _CONS_CMP_KWS)
+
+
 def check_d4_peer_table(analysis, peer):
     """D4: s05 peers 테이블이 _peer_snapshot.json과 일치하는가"""
     peers_report = analysis.get('peers', []) or []
@@ -386,6 +448,31 @@ def main(stock_name):
                     })
         except Exception:
             pass
+
+    # 갭5: 컨센과 벌어지면 **방향 무관** 하게 이유를 대야 한다 (v5.19 신설)
+    #
+    # gap2 는 'BUY 가 컨센을 그대로 따라가는 것'을 지적한다 -- 취지가 옳다.
+    # 그런데 BUY 전용 게이트만 둘이고 SELL 전용은 0이라 글쓴이 입장에서
+    # SELL 이 싸게 먹혔다(실측: v5.14 이후 8건 중 SELL 62%, 그 이전 29건은 7%).
+    # 컨센과 다른 것이 문제가 아니라 **다른 이유를 안 적는 것**이 문제다.
+    try:
+        base_t = float((analysis.get('opinion', {}) or {}).get('target_base', 0) or 0)
+        cons_t, cons_src = consensus_target(stock_name)
+        if base_t and cons_t:
+            gap_pct = (base_t / cons_t - 1) * 100
+            if abs(gap_pct) >= 15.0:
+                # 섹션 한정으로 보면 오탐이 난다(D4 Peer 사례) -- 리포트 전체를 본다
+                if not consensus_gap_explained(text_all):
+                    d6_fails.append({
+                        'gap': 'gap5',
+                        'issue': (f'목표주가가 컨센서스 평균과 {gap_pct:+.1f}% 벌어졌는데'
+                                  f' 그 이유를 밝힌 대목이 없다'
+                                  f' (우리 {base_t:,.0f} vs 컨센 {cons_t:,.0f},'
+                                  f' 출처 {cons_src}).'
+                                  f' 방향 무관 -- 매수든 매도든 컨센과 다르면 왜 다른지 적는다')
+                    })
+    except Exception:                                          # noqa: BLE001
+        pass
 
     # 갭3: Self-Attack 의무 섹션
     self_attack_kws = ['Self-Attack', 'Self Attack', '자기 반박', 'thesis가 틀릴', '논문이 틀릴',
