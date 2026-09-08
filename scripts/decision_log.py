@@ -116,14 +116,7 @@ class DecisionLog:
             os.makedirs(parent, exist_ok=True)
 
     # ---------------- 쓰기 ----------------
-    def store_decision(self, name, trade_date, rating, thesis='', targets=None,
-                       price=None, market='KR', extra=''):
-        """발간 시점에 pending 항목을 남긴다. LLM 호출 없음."""
-        if os.path.exists(self.path):
-            raw = open(self.path, encoding='utf-8').read()
-            for line in raw.splitlines():
-                if line.startswith(f"[{trade_date} | {name} |"):
-                    return False        # 멱등: 같은 날짜+종목은 한 번만
+    def _build_entry(self, name, trade_date, rating, thesis, targets, price, market, extra):
         body = [f"발간가: {price} ({market})" if price is not None else f"시장: {market}"]
         if targets:
             body.append("목표가: " + " / ".join(
@@ -133,11 +126,58 @@ class DecisionLog:
             body.append(f"투자 논지: {thesis}")
         if extra:
             body.append(extra)
-        entry = (f"[{trade_date} | {name} | {rating} | pending | market:{market}]\n\n"
-                 f"DECISION:\n" + "\n".join(body) + SEPARATOR)
+        return (f"[{trade_date} | {name} | {rating} | pending | market:{market}]\n\n"
+                f"DECISION:\n" + "\n".join(body))
+
+    def record(self, name, trade_date, rating, thesis='', targets=None,
+               price=None, market='KR', extra=''):
+        """발간 시점 항목을 남긴다. 반환: 'ADDED' / 'SKIPPED' / 'REVISED' / 'LOCKED'.
+
+        같은 날 리포트를 고쳐 다시 부르는 일이 실제로 일어난다(에프에스티 v1 HOLD ->
+        v2 SELL). 예전 구현은 (날짜, 종목)만 보고 무조건 건너뛰면서 화면에는
+        새 등급을 찍었다. 파일에는 옛 등급이 남고 화면은 새 등급을 보여주니,
+        **적중률 통계가 조용히 오염**된다. 결정 로그는 "그 콜이 맞았나"를 채점하는
+        유일한 자산이라 이게 치명적이다.
+
+        - 내용이 같으면 SKIPPED (진짜 멱등)
+        - 등급이나 목표가가 바뀌었으면 REVISED (기존 항목을 갈아끼운다)
+        - 이미 정산된 항목은 LOCKED (사후 등급 변경 금지)
+        """
+        entry = self._build_entry(name, trade_date, rating, thesis, targets,
+                                  price, market, extra)
+        head_prefix = f"[{trade_date} | {name} |"
+
+        if not os.path.exists(self.path):
+            with open(self.path, 'a', encoding='utf-8') as f:
+                f.write(entry + SEPARATOR)
+            return 'ADDED'
+
+        text = open(self.path, encoding='utf-8').read()
+        blocks = text.split(SEPARATOR)
+        for i, blk in enumerate(blocks):
+            if not blk.strip().startswith(head_prefix):
+                continue
+            if blk.strip() == entry.strip():
+                return 'SKIPPED'
+            # 정산 여부는 헤더의 상태 칸으로 판단한다 (pending 이 아니면 정산됨)
+            header = blk.strip().splitlines()[0]
+            parts = [p.strip() for p in header.strip('[]').split('|')]
+            if len(parts) >= 4 and parts[3] != 'pending':
+                return 'LOCKED'
+            blocks[i] = ('\n\n' + entry) if blk.startswith('\n\n') else entry
+            tmp = self.path + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                f.write(SEPARATOR.join(blocks))
+            os.replace(tmp, self.path)
+            return 'REVISED'
+
         with open(self.path, 'a', encoding='utf-8') as f:
-            f.write(entry)
-        return True
+            f.write(entry + SEPARATOR)
+        return 'ADDED'
+
+    def store_decision(self, *a, **k):
+        """하위 호환 래퍼. True 는 새로 쓰였다는 뜻(ADDED/REVISED)."""
+        return self.record(*a, **k) in ('ADDED', 'REVISED')
 
     def update_with_outcome(self, name, trade_date, raw_return, alpha_return,
                             holding_days, reflection='', resolution_date=None):
@@ -426,15 +466,18 @@ def cmd_record(args):
     trade_date = meta.get('date') or date.today().isoformat()
     trade_date = re.sub(r'[^\d\-]', '', str(trade_date))[:10] or date.today().isoformat()
     log = DecisionLog()
-    ok = log.store_decision(
+    result = log.record(
         name=name, trade_date=trade_date, rating=op.get('rating', 'N/A'),
         thesis=(d.get('sections', {}).get('s01_opinion_thesis', '') or '')[:400],
         targets={'bear': op.get('target_bear'), 'base': op.get('target_base'),
                  'bull': op.get('target_bull')},
         price=price.get('current'), market=market)
-    print(f"[{'OK' if ok else 'SKIP'}] {name} {trade_date} {op.get('rating')} "
-          f"{'기록' if ok else '이미 존재 (멱등)'}")
-    return 0
+    label = {'ADDED': ('OK', '기록'),
+             'REVISED': ('OK', '기존 항목 갱신 -- 등급/목표가가 바뀌었다'),
+             'SKIPPED': ('SKIP', '내용 동일 (멱등)'),
+             'LOCKED': ('WARN', '이미 정산된 항목이라 갱신하지 않았다')}[result]
+    print(f"[{label[0]}] {name} {trade_date} {op.get('rating')} {label[1]}")
+    return 1 if result == 'LOCKED' else 0
 
 
 def cmd_settle(args):
