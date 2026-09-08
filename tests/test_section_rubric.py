@@ -16,7 +16,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 if getattr(sys.stdout, 'encoding', '') != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-from section_rubric import grade, _hit, section_text   # noqa: E402
+from section_rubric import (grade, _hit, section_text,   # noqa: E402
+                            _has_prob_impact)
 
 _passed = 0
 _failed = []
@@ -94,6 +95,20 @@ eq([r[2] for r in grade({})].count('SKIP'), 6, "빈 sections 는 6축 전부 SKI
 eq([r[2] for r in grade(None)].count('SKIP'), 6, "None 도 안전")
 eq(section_text({'s08_financial': 'alias 본문'}, 's06_financial'), 'alias 본문',
    "정규 키가 비면 alias 를 본다")
+
+
+# ---------- 확률·영향은 표로 써도 인정한다 (실측 오탐 1건) ----------
+# 한화에어로 v3 이 5행짜리 매트릭스를 넣고도 FAIL 이 났다. 헤더에 확률/영향 열을
+# 두고 셀에 수치를 쓰는 것이 오히려 정석인데 산문형만 보고 있었다.
+_MATRIX = '| 리스크 | 발생 확률 | 주가 영향 |\n|---|---|---|\n| 세율 정상화 | **50%** | **-17.2%** |\n| 마진 미달 | 45% | -9.4% |\n'
+_HEADER_ONLY = '| 리스크 | 발생 확률 | 주가 영향 |\n|---|---|---|\n'
+_WRONG_COLS = '| 항목 | 매출 | 이익 |\n|---|---|---|\n| A | 10% | 20% |\n'
+
+eq(_has_prob_impact(_MATRIX), True, "**표 헤더에 확률/영향 열이 있으면 통과**")
+eq(_has_prob_impact('확률 30% 로 시총 -25%'), True, "산문형도 그대로 통과")
+eq(_has_prob_impact(_HEADER_ONLY), False, "헤더만 있고 값이 없으면 미달")
+eq(_has_prob_impact(_WRONG_COLS), False, "확률·영향 열이 아니면 미달")
+eq(_has_prob_impact('리스크가 매우 크다'), False, "서술만으로는 미달")
 
 print('=' * 62)
 if _failed:

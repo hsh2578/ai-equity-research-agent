@@ -56,7 +56,7 @@ RUBRIC = {
     ]),
     's09_scenarios_risks': ('리스크', [
         ('리스크 블록 3개 이상', r'BLOCKS>=3', 'must', None),
-        ('확률·영향 정량', r'확률\s*\d+%|시총\s*[-−]\d+%|주가\s*[-−]\d+%', 'must', None),
+        ('확률·영향 정량', r'PROBIMPACT', 'must', None),
         ('3단 구조(최대→감경→최종)', r'최대 영향|감경', 'want', None),
         ('자기 논거 공격', r'틀릴|틀린|무너|반박', 'want', None),
     ]),
@@ -107,8 +107,36 @@ def _hit(pat, section_t, report_t):
         return len(re.findall(r'^####\s', section_t, re.M)) >= int(pat.split('>=')[1])
     if pat.startswith('REPORT:'):
         return bool(re.search(pat[len('REPORT:'):], report_t))
+    if pat == 'PROBIMPACT':
+        return _has_prob_impact(section_t)
     return bool(re.search(pat, section_t))
 
+
+
+_PROB_PROSE = re.compile(r'확률\s*\d+\s*%|시총\s*[-−]\d+(?:\.\d+)?%'
+                         r'|주가\s*[-−]\d+(?:\.\d+)?%')
+_PCT = re.compile(r'\d+(?:\.\d+)?\s*%')
+
+
+def _has_prob_impact(t):
+    """확률과 영향을 수치로 적었는가. 산문형과 **표 형식**을 모두 인정한다.
+
+    표 헤더에 확률/영향 열을 두고 셀에 `50%` `-17.2%` 를 쓰는 것이 오히려
+    정석인데, 산문 패턴(`확률 50%`)만 보면 그 정석을 FAIL 로 떨어뜨린다.
+    실측 1건(한화에어로 v3) -- 5행짜리 매트릭스를 넣고도 불합격했다.
+    """
+    if _PROB_PROSE.search(t):
+        return True
+    rows = [ln for ln in t.split('\n') if ln.count('|') >= 3]
+    for i, ln in enumerate(rows):
+        if '확률' not in ln or '영향' not in ln:
+            continue
+        # 헤더 아래 본문 행 중 % 수치가 붙은 행이 2개 이상이어야 매트릭스로 본다
+        body = [r for r in rows[i + 1:i + 12]
+                if _PCT.search(r) and not set(r.strip()) <= set('|-: ')]
+        if len(body) >= 2:
+            return True
+    return False
 
 def grade(sections, rubric=None):
     """반환: [(축, 항목, 상태, 등급)]  상태 = PASS / FAIL / WARN / SKIP"""
