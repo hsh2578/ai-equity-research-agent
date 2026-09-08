@@ -231,6 +231,74 @@ def check_c9_long_sentence(text):
     return len(long_sentences) / len(sentences) * 100, len(long_sentences)
 
 
+
+# ============================================================
+# C21 / C22 (v5.7 신설) -- 스토리텔링 비중 게이트
+#
+# 배경(2026-09-08 사용자 지적 + 3종목 실측):
+#   "산업분석·기업분석·투자포인트가 가장 중요한데 재무분석 위주로 쓰이면 별로다.
+#    회사의 상태와 미래 비전, 어떤 이슈가 있는지가 중요하다. 메인은 스토리텔링이다."
+#
+#   실측: 가장 중요하다는 산업분석이 가이드 대비 74~110% 로 가장 미달이고
+#   재무(119~137%)·밸류(132~147%)만 초과했다. 표 비중도 재무 46~57% 로
+#   시나리오 섹션(19~21%) 의 두 배 이상이었다.
+#
+#   리포트는 재무제표 요약이 아니라 "이 회사가 어디로 가는가" 를 말하는 글이다.
+#   숫자는 그 주장의 근거이지 글 자체가 아니다.
+# ============================================================
+
+# verify_style 은 구 v5.1 스킴 키를 읽는다 (CLAUDE.md "v5.0 키 스킴 분열" 참조)
+STORY_KEYS = ('s02_investment_points', 's03_company_overview', 's04_industry')
+FINANCE_KEYS = ('s08_financial', 's09_valuation')
+
+STORY_RATIO_MIN = 1.5     # 스토리 3섹션 합 / 재무 2섹션 합
+TABLE_MAX = {'s02_investment_points': 35, 's03_company_overview': 35,
+             's04_industry': 35, 's08_financial': 45, 's09_valuation': 45}
+
+
+def table_ratio(text):
+    """본문에서 마크다운 표 행이 차지하는 문자 비율(%).
+
+    분자·분모 모두 **라인 길이 합**으로 센다. 분모에 len(text) 를 쓰면
+    개행 문자가 분모에만 들어가 경계에서 몇 %p 씩 어긋난다.
+    """
+    if not text:
+        return 0.0
+    lines = text.splitlines()
+    total = sum(len(ln) for ln in lines)
+    if total == 0:
+        return 0.0
+    tbl = sum(len(ln) for ln in lines if ln.strip().startswith('|'))
+    return tbl / total * 100
+
+
+def check_c21_story_weight(sections):
+    """C21: 스토리(투자포인트+기업분석+산업분석) 대 재무+밸류 분량 비율.
+
+    반환: (비율, 통과여부). 재무 섹션이 없으면 (None, None) -- 판정 불가다.
+    결측을 0 으로 때우면 "재무가 0자라 무한대 통과" 가 되어 게이트가 죽는다.
+    """
+    story = sum(len(sections.get(k) or '') for k in STORY_KEYS)
+    fin = sum(len(sections.get(k) or '') for k in FINANCE_KEYS)
+    if fin == 0:
+        return None, None
+    ratio = story / fin
+    return ratio, ratio >= STORY_RATIO_MIN
+
+
+def check_c22_table_overload(sections):
+    """C22: 섹션별 표 비중 상한. 반환: [(섹션, 비중, 상한), ...]"""
+    over = []
+    for k, cap in TABLE_MAX.items():
+        t = sections.get(k)
+        if not t:
+            continue
+        r = table_ratio(t)
+        if r > cap:
+            over.append((k, round(r, 1), cap))
+    return over
+
+
 def check_c10_witty_quote(text):
     """C10 (v4.16, v4.18 의무화): 위트성 마무리 인용 박스 (>) 존재 여부
     - "> 가입자는 끝, 광고가 시작 -- 그러나 시장이 한 발 빨랐다." 패턴
@@ -556,6 +624,27 @@ def main(stock_name):
         print(f"  [✗ C20] 클리셰 (메커니즘 부재)    {cliche_count}건 (3건 이상 = 일반론) -- 박상욱 5단 메커니즘으로 대체")
     else:
         print(f"  [✓ C20] 클리셰                   {cliche_count}건")
+
+    # ----- C21. 스토리텔링 비중 -----
+    _ratio, _ok = check_c21_story_weight(sections)
+    if _ratio is not None:
+        total_checks += 1
+        if not _ok:
+            fail += 1
+            print(f"  [✗ C21] 스토리 비중              {_ratio:.2f}배 (1.50배+ 필요) -- "
+                  f"투자포인트+기업분석+산업분석이 재무+밸류 대비 얇다")
+        else:
+            print(f"  [✓ C21] 스토리 비중              {_ratio:.2f}배")
+
+    # ----- C22. 표 과다 -----
+    _over = check_c22_table_overload(sections)
+    total_checks += 1
+    if _over:
+        fail += 1
+        _d = ', '.join(f"{k} {r}%>{c}%" for k, r, c in _over)
+        print(f"  [✗ C22] 표 과다                  {_d} -- 표를 줄이고 해석 산문을 붙일 것")
+    else:
+        print(f"  [✓ C22] 표 비중                  전 섹션 상한 이내")
 
     print(f"\n총 FAIL: {fail} / 전체 체크 {total_checks}")
     score = (1 - fail / total_checks) * 100 if total_checks else 0
