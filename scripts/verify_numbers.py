@@ -67,6 +67,18 @@ def check_b24_targets_in_body(opinion, sections):
     return missing
 
 
+def is_estimate_col(header):
+    """'2026E' / '2027F' 처럼 추정 열인가.
+
+    실측 사고(2026-09-08 LS일렉트릭): B7/B8 이 헤더에서 'E' 를 떼고 비교해
+    **컨센서스 추정 EPS 3,588원을 financial_summary 의 반기 실적 1,594원과
+    맞대 놓고 FAIL** 을 냈다. 추정치는 실적이 아니므로 애초에 비교 대상이 아니고,
+    더구나 진행 중인 해의 값은 연간이 아니라 누적 반기일 수 있다.
+    """
+    t = str(header or '').strip().upper()
+    return t.endswith('E') or t.endswith('F') or '(E)' in t
+
+
 def band_claims_in(text, metrics=None):
     """본문에 쓰인 밴드 단정 표현 목록.
 
@@ -287,6 +299,8 @@ def main(stock_name):
         if row and 'EBITDA' in str(row[0]):
             ebitda_mismatch = 0
             for i, y in enumerate(headers[1:], 1):
+                if is_estimate_col(y):      # 추정 열은 실적과 비교하지 않는다
+                    continue
                 y_str = str(y).replace('E', '').replace('F', '')
                 if y_str in fins:
                     orig_ebitda = fins[y_str].get('ebitda')
@@ -309,6 +323,8 @@ def main(stock_name):
         if row and ('EPS' in str(row[0])):
             eps_mismatch = 0
             for i, y in enumerate(headers[1:], 1):
+                if is_estimate_col(y):      # 추정 열은 실적과 비교하지 않는다
+                    continue
                 y_str = str(y).replace('E', '').replace('F', '')
                 if y_str in fins:
                     orig_eps = fins[y_str].get('eps')

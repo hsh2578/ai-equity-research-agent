@@ -28,6 +28,9 @@ import html as html_lib
 
 
 
+_QUOTE_BOX_RE = re.compile(
+    r'^>\s*\**\s*(?:사업보고서|반기보고서|분기보고서|SEC\s*10-[KQ]|컨퍼런스콜|증권사 리포트)', re.M)
+
 def parse_market_cap(raw):
     """리포트 표기 시총 문자열 -> 숫자. 파싱 불가면 None.
 
@@ -1522,7 +1525,7 @@ def _generate_summary_v2(data, output_dir):
     # ==========================================================================
     # PAGE 1 — COVER
     # ==========================================================================
-    cover_rating_color = {"BUY": "#2a6b4a", "HOLD": "#b8922e", "SELL": "#8b2e2e"}.get(rating, "#b8922e")
+    cover_rating_color = {"BUY": "#0a56d6", "HOLD": "#6b7280", "SELL": "#d32f2f"}.get(rating, "#b8922e")
 
     # ----- Cover Dashboard 계산: 1M/6M/12M 수익률 (daily_prices 이용) -----
     def _calc_return(prices, trading_days):
@@ -1575,7 +1578,10 @@ def _generate_summary_v2(data, output_dir):
     stock_data_rows = [
         ("시가총액", price.get("market_cap")),
         ("52주 고/저", range_52w),  # 통합 1행
-        ("PER (TTM)", f'{price.get("per")}x' if price.get("per") else None),
+        # KIS 가 주는 PER 은 **직전 연간 EPS** 기준이지 TTM 이 아니다.
+        # (실측 2026-09-08 LS일렉트릭: KIS 104.92배 = FY2025 EPS 1,911원 기준,
+        #  TTM 지배순이익으로 계산하면 77.4배. 라벨이 TTM 이면 독자가 오해한다.)
+        ("PER (후행)", f'{price.get("per")}x' if price.get("per") else None),
         ("PBR", f'{price.get("pbr")}x' if price.get("pbr") else None),
         ("EPS", _price_fmt(price.get("eps")) if price.get("eps") else None),
         ("BPS", _price_fmt(price.get("bps")) if price.get("bps") else None),
@@ -2537,6 +2543,98 @@ def _md_to_html_blocks(md_text):
     return '\n'.join(html_parts)
 
 
+_ANALYST_CSS = r"""
+/* ===== v5.16 애널리스트 리포트 디자인 (증권사 PDF 50편 실측 기반) =====
+   본문 9.2pt (삼성 7.8 / 하나 9.2 / 교보 9.5 실측 중앙값), 액센트 1색. */
+:root{
+  --ac:#0a56d6; --ac-dk:#083ea0; --ac-lt:#eef2fb;
+  --ink:#14181d; --sub:#5b626b; --line:#dfe3ea; --rail:#eef2f8;
+  --pos:#12694a; --neg:#c0392b;
+}
+html, body{ font-size:9.2pt !important; line-height:1.62 !important; color:var(--ink); }
+
+/* ---- 커버: 좌측 데이터 레일 + 우측 본문 (삼성증권형) ---- */
+.full-bleed.acover{
+  background:var(--rail) !important; color:var(--ink) !important;
+  padding:0 !important; display:flex !important;
+  height:269mm; overflow:hidden; position:relative;   /* @page margin 14mm x2 를 뺀 값 */
+}
+.acover .rail{ width:52mm; padding:16mm 6mm 0 9mm; }
+.acover .kind{ font-family:var(--font-body); font-size:19pt; font-weight:800;
+  line-height:1.05; letter-spacing:-.5px; color:var(--ink); }
+.acover .dt{ font-size:7.5pt; color:var(--sub); margin-top:3mm; }
+.acover .team{ font-size:7pt; color:var(--ac); font-weight:700; margin-top:11mm; }
+.acover .who{ font-size:8pt; font-weight:700; margin-top:1.2mm; }
+.acover .mail{ font-size:6.4pt; color:var(--sub); }
+.acover .rl-hr{ height:.4mm; background:var(--line); margin:3mm 0; }
+.acover .blk{ margin-top:5mm; }
+.acover .blkh{ font-size:7pt; font-weight:700; margin-bottom:1.4mm; }
+.acover .blkh:before{ content:'▶'; color:var(--ac); font-size:5pt; margin-right:1.2mm; }
+.acover .badge{ color:#fff; text-align:center; font-size:14pt; font-weight:800;
+  letter-spacing:.5px; padding:1.4mm 0; border-radius:.5mm; }
+.acover table{ width:100%; border-collapse:collapse; font-size:6.8pt; }
+.acover td{ padding:.75mm 0; border-bottom:.25mm solid #e5e9ef; color:var(--sub);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:19mm; }
+.acover td.v{ text-align:right; color:var(--ink); font-weight:600;
+  font-variant-numeric:tabular-nums; white-space:nowrap; max-width:none; }
+.acover td.k{ color:var(--ac); font-weight:600; }
+.acover .main{ flex:1; background:#fff; margin:9mm 9mm 9mm 0;
+  border-radius:.8mm; padding:13mm 12mm; }
+.acover .co{ font-size:26pt; font-weight:800; letter-spacing:-.8px; line-height:1.1; }
+.acover .co span{ font-size:15pt; font-weight:400; color:var(--sub); }
+.acover .atag{ font-size:11.5pt; color:var(--sub); margin-top:1.5mm; }
+.acover .sum{ background:#f3f6fb; padding:4mm 5mm 4mm 9mm; margin:7mm 0 0;
+  font-size:8pt; line-height:1.6; }
+.acover .sum li{ margin-bottom:1.6mm; }
+.acover .sh{ font-size:12pt; font-weight:800; color:var(--ac); margin:8mm 0 3mm; }
+.acover .fin{ width:100%; border-collapse:collapse; font-size:6.9pt; margin-top:2mm; }
+.acover .fin th{ background:var(--ac-lt); padding:1.2mm 1.6mm; text-align:right;
+  font-weight:700; border-top:.35mm solid var(--ac); }
+.acover .fin th:first-child{ text-align:left; }
+.acover .fin td{ padding:1mm 1.6mm; text-align:right; border-bottom:.2mm solid #eef1f5;
+  font-variant-numeric:tabular-nums; }
+.acover .fin td:first-child{ text-align:left; color:var(--sub); }
+.acover .fin tr:last-child td{ border-bottom:.35mm solid var(--ac); }
+.acover .alogo{ position:absolute; left:9mm; bottom:8mm; font-size:11pt;
+  font-weight:800; color:var(--ac); letter-spacing:-.3px; }
+
+/* ---- 본문: 러닝헤더 + 큰 컬러 섹션 제목 (교보형) ---- */
+.section-block{ padding-top:4mm; }
+.section-block .running-head{ display:flex; justify-content:space-between;
+  align-items:flex-end; border-bottom:.3mm solid var(--line);
+  padding-bottom:1.5mm; margin-bottom:6mm; }
+.section-block .rh-l{ font-size:8pt; font-weight:800; color:var(--ac); }
+.section-block .rh-l small{ display:block; font-size:7pt; font-weight:400; color:#98a0aa; }
+.section-block .rh-r{ font-size:7.4pt; color:#98a0aa; }
+/* 실제 클래스명은 section-caption / section-heading 이다.
+   교보형: section-caption를 러닝헤더처럼 얇게 올리고 제목을 크고 컬러로. */
+.section-block .section-caption{
+  font-size:7pt !important; font-weight:700 !important; color:#98a0aa !important;
+  letter-spacing:2px !important; margin:0 0 1.5mm !important; }
+.section-block .section-heading{
+  font-family:var(--font-body) !important; font-size:17pt !important; font-weight:800 !important;
+  color:var(--ac) !important; letter-spacing:-.6px !important; border:0 !important;
+  padding:0 0 2mm !important; margin:0 0 5mm !important;
+  border-bottom:.4mm solid var(--ac) !important; }
+.section-block .section-intro{ font-size:8.2pt !important; color:var(--sub) !important; }
+.section-block .section-body h3{ font-size:10.5pt; font-weight:800; color:var(--ink);
+  border-left:1mm solid var(--ac); padding-left:2.5mm; margin:6mm 0 2.5mm; }
+.section-block .section-body h4{ font-size:9.6pt; font-weight:700; color:var(--ac-dk);
+  margin:5mm 0 2mm; }
+.section-block .section-body p{ text-align:justify; margin:0 0 2.6mm; }
+.section-block .section-body strong{ color:#000; font-weight:700; }
+.margin-note{ background:var(--ac-lt) !important; border-left:.9mm solid var(--ac) !important;
+  color:var(--ac-dk) !important; font-size:8.2pt !important; padding:2mm 3mm !important; }
+table.nyt{ font-size:7.4pt !important; }
+table.nyt th{ background:var(--ac-lt) !important; color:#243043 !important;
+  border-top:.35mm solid var(--ac) !important; border-bottom:.2mm solid var(--line) !important;
+  padding:1.3mm 1.8mm !important; }
+table.nyt td{ padding:1.1mm 1.8mm !important; border-bottom:.18mm solid #eef1f5 !important; }
+blockquote.md-quote{ border-left:.8mm solid var(--ac) !important; background:#fafbfd !important;
+  font-size:8.2pt !important; color:#2a3038 !important; }
+.report-chart figcaption{ font-size:7.2pt !important; color:var(--sub) !important; }
+"""
+
 _DETAILED_V3_CSS = r"""
   /* ============================================================
      WEB FONTS — Pretendard Variable (Korean primary)
@@ -3441,7 +3539,7 @@ def _generate_detailed_v3(data, output_dir):
     down_bear = ((opinion["target_bear"] - cur_price) / cur_price) * 100
     rating = opinion.get("rating", "HOLD")
     rr = opinion.get("risk_reward", "—")
-    rating_color = {"BUY": "#2a6b4a", "HOLD": "#b8922e", "SELL": "#8b2e2e"}.get(rating, "#b8922e")
+    rating_color = {"BUY": "#0a56d6", "HOLD": "#6b7280", "SELL": "#d32f2f"}.get(rating, "#6b7280")
 
     # ---- 52-week range
     hi_52 = price.get("high_52w")
@@ -3525,7 +3623,10 @@ def _generate_detailed_v3(data, output_dir):
     stock_data_rows = [
         ("시가총액", price.get("market_cap")),
         ("52주 고/저", range_52w_fmt),
-        ("PER (TTM)", f'{price.get("per")}x' if price.get("per") else None),
+        # KIS 가 주는 PER 은 **직전 연간 EPS** 기준이지 TTM 이 아니다.
+        # (실측 2026-09-08 LS일렉트릭: KIS 104.92배 = FY2025 EPS 1,911원 기준,
+        #  TTM 지배순이익으로 계산하면 77.4배. 라벨이 TTM 이면 독자가 오해한다.)
+        ("PER (후행)", f'{price.get("per")}x' if price.get("per") else None),
         ("PBR", f'{price.get("pbr")}x' if price.get("pbr") else None),
         ("EPS", _price_fmt(price.get("eps"))),
         ("BPS", _price_fmt(price.get("bps"))),
@@ -3609,66 +3710,127 @@ def _generate_detailed_v3(data, output_dir):
     # =====================================================================
     # PAGE 1 — COVER (융합: 네이비/골드 기관급 + 위닝펀드 Dashboard + 3-Target 스펙트럼)
     # =====================================================================
+    # 레일 3블록: 종목정보 / 밸류에이션 / 컨센서스 (실측값만, 없으면 행 생략)
+    def _row(k, v, key=False):
+        if v in (None, "", "—"):
+            return ""
+        cls = ' class="k"' if key else ""
+        return f'<tr><td{cls}>{html_lib.escape(str(k))}</td><td class="v">{v}</td></tr>'
+
+    _p = price
+    _fp = lambda x: fmt_money(x) if x else None
+    rail_stock = "".join([
+        _row("목표주가", f'{fmt_money(opinion.get("target_base"))} {up_base:+.1f}%', True),
+        _row("현재주가", fmt_money(cur_price)),
+        _row("시가총액", _p.get("market_cap")),
+        _row("발행주식수", f'{_p["shares_outstanding"]/1e8:.2f}억주' if _p.get("shares_outstanding") else None),
+        _row("52주 최저/최고", f'{_fp(_p.get("low_52w"))} / {_fp(_p.get("high_52w"))}'
+             if _p.get("low_52w") and _p.get("high_52w") else None),
+    ])
+    rail_val = "".join([
+        _row("PER (후행)", f'{_p["per"]:.1f}배' if _p.get("per") else None),
+        _row("PER (TTM)", f'{_p["ttm_per"]:.1f}배' if _p.get("ttm_per") else None),
+        _row("PER (12M Fwd)", f'{_p["forward_per"]:.1f}배' if _p.get("forward_per") else None),
+        _row("PBR", f'{_p["pbr"]:.2f}배' if _p.get("pbr") else None),
+        _row("배당수익률", f'{_p["dividend_yield"]:.2f}%' if _p.get("dividend_yield") else None),
+    ])
+    rail_sc = "".join([
+        _row("Bear", f'{fmt_money(opinion.get("target_bear"))} {down_bear:+.1f}%'),
+        _row("Base", f'{fmt_money(opinion.get("target_base"))} {up_base:+.1f}%', True),
+        _row("Bull", f'{fmt_money(opinion.get("target_bull"))} {up_bull:+.1f}%'),
+        _row("Risk / Reward", html_lib.escape(rr_short)),
+    ])
+
+    # 요약 불릿 -- 마진 노트 / '한 줄 평가:' / 굵은 핵심문장 순으로 3단 fallback.
+    # (리포트마다 강조 표기가 달라 한 패턴만 보면 불릿이 1개만 나온다 -- 실측)
+    _s01 = sections.get("s01_opinion_thesis") or sections.get("s01_opinion") or ""
+    _P_MARGIN = r"^>\s*\*\*한 줄:\*\*\s*(.+)$"
+    _P_EVAL = r"^#{2,4}\s*[^\n]*한 줄 평가\s*:\s*(.+)$"
+    _P_QUOTE = r"^>\s+(?!\*\*한 줄)(.{10,120})$"
+    _bul = re.findall(_P_MARGIN, _s01, re.M)
+    if len(_bul) < 3:
+        _bul += [m.strip() for m in re.findall(_P_EVAL, _s01, re.M)]
+    if len(_bul) < 3:
+        _bul += [m.strip() for m in re.findall(_P_QUOTE, _s01, re.M)]
+    if len(_bul) < 3:
+        for m in re.findall(r"\*\*(.{14,110}?)\*\*", _s01):
+            if "|" in m or m.startswith("한 줄"):
+                continue
+            _bul.append(m.strip())
+            if len(_bul) >= 3:
+                break
+    _seen, _bul3 = set(), []
+    for _b in _bul:
+        _b = _b.strip().rstrip(".")
+        if _b and _b not in _seen:
+            _seen.add(_b)
+            _bul3.append(_b)
+        if len(_bul3) == 3:
+            break
+
+    def _bold(t):
+        return re.sub(r"\*\*(.+?)\*\*", r"<strong>\g<1></strong>", t)
+
+    sum_html = "".join('<li>%s</li>' % _bold(html_lib.escape(b)) for b in _bul3)
+
+    def _story_paras(md, limit=4, maxlen=1500):
+        """커버 본문 문단. 표/인용/소제목은 빼고 산문만 순서대로 담는다."""
+        out, total = [], 0
+        for ln in (md or "").split("\n\n"):
+            t = ln.strip()
+            if not t or t[0] in "#>|-*" or len(t) < 60:
+                continue
+            t = re.sub(r"\s+", " ", t)
+            out.append(_bold(html_lib.escape(t)))
+            total += len(t)
+            if len(out) >= limit or total > maxlen:
+                break
+        return "".join("<p>%s</p>" % p for p in out)
+
+    story_html = _story_paras(_s01)
+
+    _fin = data.get("financials") or {}
+    _hd = _fin.get("headers") or []
+    _rw = _fin.get("rows") or []
+    fin_html = ""
+    if _hd and _rw:
+        _keep = list(range(1, len(_hd)))[-4:]
+        fin_html += "<tr>" + '<th>%s</th>' % html_lib.escape(str(_hd[0])) + "".join(
+            '<th>%s</th>' % html_lib.escape(str(_hd[i])) for i in _keep) + "</tr>"
+        for r in _rw[:6]:
+            if not isinstance(r, list) or not r:
+                continue
+            fin_html += "<tr>" + '<td>%s</td>' % html_lib.escape(str(r[0])) + "".join(
+                '<td>%s</td>' % (html_lib.escape(str(r[i])) if i < len(r) else "—")
+                for i in _keep) + "</tr>"
+
     cover_html = f"""
-<section class="full-bleed cover">
-  <div class="accent-corner"></div>
-  <div class="brand-bar">
-    <div>AI Equity Research · {html_lib.escape(meta.get("country","KR"))} · {html_lib.escape(meta.get("market",""))}</div>
-    <div>{html_lib.escape(meta.get("date",""))}</div>
-  </div>
-  <div class="cover-body">
-    <div class="cap-gold">— Equity Research Note —</div>
-    <h1 class="stock-title">{html_lib.escape(meta.get("stock_name",""))}</h1>
-    <div class="stock-meta">{html_lib.escape(meta.get("stock_code",""))} &nbsp;·&nbsp; {html_lib.escape(meta.get("industry",""))}</div>
-    <div class="tagline">{html_lib.escape(tagline)}</div>
-  </div>
-  <div class="dashboard">
-    <div class="dash-block">
-      <div class="dash-title">핵심 지표</div>
-      {stock_data_html}
+<section class="full-bleed acover">
+  <div class="rail">
+    <div class="kind">COMPANY<br>REPORT</div>
+    <div class="dt">{html_lib.escape(meta.get("date",""))}</div>
+    <div class="team">{html_lib.escape(meta.get("industry",""))}</div>
+    <div class="who">AI Equity Research</div>
+    <div class="mail">{html_lib.escape(meta.get("market",""))} · {html_lib.escape(meta.get("stock_code",""))}</div>
+    <div class="rl-hr"></div>
+    <div class="blk">
+      <div class="blkh">종목 정보</div>
+      <div class="badge" style="background:{rating_color};">{html_lib.escape(rating)}</div>
+      <table>{rail_stock}</table>
     </div>
-    <div class="dash-block">
-      <div class="dash-title">{cons_block_title_c}</div>
-      {cons_rows_html}
-    </div>
-    <div class="dash-block">
-      <div class="dash-title">주가 수익률 · 밸류</div>
-      {returns_html}
-    </div>
+    <div class="blk"><div class="blkh">밸류에이션</div><table>{rail_val}</table></div>
+    <div class="blk"><div class="blkh">3-시나리오</div><table>{rail_sc}</table></div>
   </div>
-  <div class="pick-box">
-    <div class="pick-label">투자의견 · 3-시나리오 목표주가 스펙트럼</div>
-    <div class="pick-row" style="align-items:flex-start;">
-      <div style="padding-top:2mm;">
-        <span class="pick-badge" style="background:{rating_color};">{html_lib.escape(rating)}</span>
-        <div style="margin-top:3mm; font-size:7.5pt; color:#b8c3d4; letter-spacing:1.5px;">
-          Current &nbsp; <b style="color:#ffffff;">{fmt_money(cur_price)}</b><br>
-          R/R &nbsp;&nbsp; <b style="color:#b8922e;">{html_lib.escape(rr_short)}</b>
-        </div>
-      </div>
-      <div class="target-spectrum">
-        <div class="target-cell bear">
-          <div class="t-lbl">Bear</div>
-          <div class="t-val">{fmt_money(opinion.get("target_bear"))}</div>
-          <div class="t-delta">{down_bear:+.1f}%</div>
-        </div>
-        <div class="target-cell base">
-          <div class="t-lbl">Base</div>
-          <div class="t-val">{fmt_money(opinion["target_base"])}</div>
-          <div class="t-delta">{up_base:+.1f}%</div>
-        </div>
-        <div class="target-cell bull">
-          <div class="t-lbl">Bull</div>
-          <div class="t-val">{fmt_money(opinion.get("target_bull"))}</div>
-          <div class="t-delta">{up_bull:+.1f}%</div>
-        </div>
-      </div>
-    </div>
+  <div class="main">
+    <div class="co">{html_lib.escape(meta.get("stock_name",""))} <span>({html_lib.escape(meta.get("stock_code",""))})</span></div>
+    <div class="atag">{html_lib.escape(tagline)}</div>
+    <ul class="sum">{sum_html}</ul>
+    <div class="sh">WHAT'S THE STORY?</div>
+    <div class="acover-body">{story_html}</div>
+    <div class="sh" style="font-size:9.5pt; margin-top:7mm;">SUMMARY FINANCIAL DATA</div>
+    <table class="fin">{fin_html}</table>
   </div>
-  <div class="cover-footer">
-    <span>Framework · 5-Layer Analysis · Q1–Q10 Quant Protocol</span>
-    <span>Single-Agent Research v4</span>
-  </div>
+  <div class="alogo">AI EQUITY RESEARCH</div>
 </section>
 """
 
@@ -3869,6 +4031,7 @@ def _generate_detailed_v3(data, output_dir):
 <html lang="ko"><head><meta charset="UTF-8">
 <title>{html_lib.escape(meta.get("stock_name",""))} — Equity Research (Detailed)</title>
 <style>{_DETAILED_V3_CSS}</style>
+<style>{_ANALYST_CSS}</style>
 </head><body>
 {cover_html}
 {exec_html}
@@ -4278,15 +4441,24 @@ def main():
     # 2. 사업보고서 인용 체크: sections에 "사업보고서" 또는 "10-K" 키워드가 있는지
     all_sections_text = " ".join(str(v) for v in sections.values())
     quote_keywords = ["사업보고서에 따르면", "사업보고서에서", "10-K에 따르면", "10-K에서", "DART 사업보고서", "공시에 따르면"]
-    quote_count = sum(1 for kw in quote_keywords if kw in all_sections_text)
+    # v4.18 이 **의무화한 인용 형식**은 서술형이 아니라 인용 박스다:
+    #   > 사업보고서 II. 사업의 내용 (2026/08 공시): "..."
+    # 위 서술형 키워드만 세면 규칙을 정확히 지킨 리포트가 "인용 0건" 경고를 받는다
+    # (실측 2026-09-08 LS일렉트릭: 인용 박스 15개인데 구 카운터는 0건).
+    quote_count = (sum(1 for kw in quote_keywords if kw in all_sections_text)
+                   + len(_QUOTE_BOX_RE.findall(all_sections_text)))
     if quote_count < 2:
         warnings.append(f"사업보고서 인용 부족: {quote_count}건 (최소 3건 권장)")
 
     # 3. "왜?" 분석 체크: YoY 변동 설명이 있는지
     why_keywords = ["원인", "이유", "때문", "영향으로", "기인", "결과"]
-    why_count = sum(1 for kw in why_keywords if kw in all_sections_text)
-    if why_count < 5:
-        warnings.append(f'"왜?" 분석 부족: 원인/이유 언급 {why_count}건 (최소 5건 권장)')
+    # 구 방식은 **몇 종류가 등장했는지**를 셌다(최대 6). 그러면 어휘 다양성을 재는
+    # 것이지 분석 깊이를 재는 게 아니다. 실측(2026-09-08): LS일렉트릭이 총 65회로
+    # 네 리포트 중 가장 많은데 종류가 4개라 경고, 42회짜리는 5종이라 통과했다.
+    # **인과 분석이 가장 많은 리포트를 벌하는 검출기**였다. 총 등장 횟수로 바꾼다.
+    why_count = sum(all_sections_text.count(kw) for kw in why_keywords)
+    if why_count < 15:
+        warnings.append(f'"왜?" 분석 부족: 원인/이유 언급 {why_count}회 (최소 15회 권장)')
 
     # 4. Risk-Reward 검증
     current = price.get("current", 0) or 1

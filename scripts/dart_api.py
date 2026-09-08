@@ -55,25 +55,23 @@ def get_corp_code(company_name: str) -> tuple[str, str]:
     xml_data = z.read(z.namelist()[0])
     root = ET.fromstring(xml_data)
 
-    results = []
-    for corp in root.findall("list"):
-        name = corp.findtext("corp_name", "")
-        code = corp.findtext("corp_code", "")
-        stock_code = corp.findtext("stock_code", "").strip()
-        if company_name in name and stock_code:  # 상장사만
-            results.append((name, code, stock_code))
+    rows = [(corp.findtext("corp_name", ""),
+             corp.findtext("corp_code", ""),
+             corp.findtext("stock_code", "").strip())
+            for corp in root.findall("list")]
 
-    if not results:
-        raise ValueError(f"'{company_name}'에 해당하는 상장사를 찾을 수 없습니다.")
+    # 통용명과 DART 등록명이 다른 회사가 많다 (LS일렉트릭 -> 엘에스일렉트릭).
+    # 그대로 두면 이 함수를 쓰는 dart_quarterly 까지 같이 죽어 분기 실측이 빈다.
+    from corp_name_resolver import resolve
+    hit = resolve(rows, company_name)
+    if not hit:
+        raise ValueError(
+            f"'{company_name}'에 해당하는 상장사를 찾을 수 없습니다. "
+            f"6자리 종목코드를 직접 넘기면 이름 표기와 무관하게 조회된다.")
 
-    # 정확히 일치하는 것 우선
-    for name, code, stock_code in results:
-        if name == company_name:
-            print(f"[OK] {name} (고유번호: {code}, 종목코드: {stock_code})")
-            return code, stock_code
-
-    # 없으면 첫 번째 결과
-    name, code, stock_code = results[0]
+    name, code, stock_code = hit
+    if name != (company_name or '').strip():
+        print(f"[NOTE] 입력 '{company_name}' -> DART 등록명 '{name}'")
     print(f"[OK] {name} (고유번호: {code}, 종목코드: {stock_code})")
     return code, stock_code
 

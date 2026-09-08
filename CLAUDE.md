@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 주식 AI 리서치 리포트 자동 생성 시스템. DART(한국 전자공시), 한국투자증권 OpenAPI, SEC EDGAR(미국), FnGuide에서 재무제표·사업보고서·시세·컨센서스를 수집하고, **v5.0 12섹션 구조 (CFA Institute 표준 + IB + 한국 일류 통합)** 증권사 수준 리포트를 자동 생성한다. v4 21섹션 구조도 하위 호환.
 
 **산출 경로 2종 (공용 수집 → analysis.json → 분기)**:
-- **`/research`** → `generate_all.py` → **단일 상세 PDF** (Navy/Gold, HTML→PDF). 기본 경로.
+- **`/research`** → `generate_all.py` → **단일 상세 PDF** (증권사 리포트 디자인, HTML→PDF). 기본 경로.
 - **US 종목** → `/research {TICKER}` 진입 후 `.claude/commands/_research_us.md` 로 라우팅 (v5.5). 공통 뼈대는 `research.md`, 데이터 수집·정독·검증만 US 파일이 대체.
 - **`/wf-report`** → `generate_word_wf.py` → **위닝펀드 스타일 Word(.docx)** + 본문 소제목에 맞는 도표 하이브리드 삽입. 데이터 수집·analysis.json은 `/research`와 동일 자산 공용, 산출 포맷·도표·검증만 별도. 상세: `## Word 리포트 파이프라인` 섹션.
 
@@ -40,7 +40,7 @@ playwright install chromium      # generate_all.py HTML->PDF 변환용
 /research {종목명 또는 티커}      # PDF 리포트
 /wf-report {종목명 또는 티커}     # 위닝펀드 Word(.docx) 리포트 (도표 하이브리드)
 
-# 리포트 생성 (analysis JSON -> 단일 상세 PDF, Navy/Gold v3, v5.0 12섹션 자동 감지)
+# 리포트 생성 (analysis JSON -> 단일 상세 PDF, v5.16 애널리스트 디자인, 섹션 스킴 자동 감지)
 python scripts/generate_all.py scripts/analysis_{종목명}.json
 
 # Word 리포트 빌드 (/wf-report 경로: 계획 -> 생성 -> 검증)
@@ -74,11 +74,13 @@ python scripts/verify_numbers.py {종목명}    # KR
 python scripts/verify_numbers_us.py {TICKER} # US (B12~B15 추가)
 python scripts/verify_style.py {종목명}      # C1~C20 (KR/US 공통)
 python scripts/verify_facts.py {종목명}      # D1~D6 (KR/US 공통)
+python scripts/source_coverage.py {종목명}   # v5.14 1차 출처 활용도 (0 FAIL)
+python scripts/section_rubric.py {종목명}    # v5.15 애널리스트 6축 (0 FAIL)
 
 # 사업보고서 핵심 인용 추출
 python scripts/report_extractor.py data/{종목명}/data_dart_reports.json
 
-# 테스트 (v5.5 신설, 93 케이스 / 3 스위트)
+# 테스트 (38 스위트 -- 신규 도구는 반드시 테스트를 함께 만든다)
 python tests/run_all.py
 
 # 스킬 코드 블록 또는 scripts/* 변경 후 문법 체크
@@ -97,7 +99,7 @@ python -c "import fitz; doc = fitz.open('output/{종목명}/report_{종목명}_�
 ┌─────────────────┐    ┌──────────────────┐    ┌──────────────────────┐
 │ dart_api.py      │    │ financial_       │    │ generate_all.py      │
 │  → 재무제표 3년   │───→│  summary.py      │───→│  → 단일 상세 PDF      │
-│  → 사업보고서 5개  │    │  (자동 정리+검증)  │    │  (Navy/Gold v3)      │
+│  → 사업보고서 5개  │    │  (자동 정리+검증)  │    │  (v5.16 디자인)       │
 │                  │    │                  │    │  HTML→PDF (Playwright) │
 │ kis_api.py       │    │ report_          │    │                      │
 │  → 현재가/수급    │───→│  extractor.py    │    │ 마크다운 풀 파싱       │
@@ -109,7 +111,7 @@ python -c "import fitz; doc = fitz.open('output/{종목명}/report_{종목명}_�
 └─────────────────┘    └──────────────────┘    └──────────────────────┘
 ```
 
-**v3 변경사항 (2026-04):** 이전 3개 파일 (상세PDF + 요약PDF + 대시보드HTML)에서 **단일 상세 PDF**로 통합. Word/docx 기반에서 HTML/CSS Navy/Gold 디자인으로 전환. 21섹션 자연 흐름 + Cover/Executive/Final Call 풀 페이지.
+**v3 변경사항 (2026-04):** 이전 3개 파일 (상세PDF + 요약PDF + 대시보드HTML)에서 **단일 상세 PDF**로 통합. Word/docx 기반에서 HTML/CSS 디자인으로 전환(팔레트는 v5.16 에서 단일 액센트로 교체). 21섹션 자연 흐름 + Cover/Executive/Final Call 풀 페이지.
 
 ## Data Flow
 
@@ -198,7 +200,7 @@ out_path = f'_tmp_r{idx}_{short}.txt'
 | `sec_edgar.py` | SEC EDGAR 래퍼. US 종목 재무제표 + 10-K/10-Q |
 | `financial_summary.py` | KR: DART/KIS 원본 -> 손익+재무상태+현금흐름+비율 자동 정리. 이상치 경고 |
 | `financial_summary_us.py` | US: SEC EDGAR XBRL + KIS 해외주식 + yfinance -> 동일 포맷 재무 요약. Forward PE/EPS/타겟 포함 |
-| `generate_all.py` | analysis.json → **단일 상세 PDF** (Navy/Gold v3, HTML→PDF). 마크다운 파싱 + 이모지 strip + 자동 품질 검증 9개 |
+| `generate_all.py` | analysis.json → **단일 상세 PDF** (v5.16 애널리스트 디자인, HTML→PDF). 마크다운 파싱 + 이모지 strip + 자동 품질 검증 9개 |
 | `verify_numbers.py` | **KR 종목 전용** B1~B11 수치 정합성 자동 검증 (시총/현재가/PER/PBR/EPS/52주/수급/순현금/EBITDA/EPS/신용등급/R/R/Wisereport) |
 | `verify_numbers_us.py` | **US 종목 전용** (v4.15 신설) B1~B15 자동 검증 (위 KR 항목 + Stock Split 자동 감지 + GAAP/Non-GAAP 분리 + EPS×주식=NI 산술 일관성 + DCF vs Base 50%+ 괴리 경고). **B17 (v4.17 신설)**: 본문 FCF/순부채/시총 변종 자동 감지 (3종+ 고유값 등장 시 WARN, 시점 라벨 수동 확인 권고) |
 | `verify_style.py` | 서술 품질 **C1~C20** (총점 100). C1~C6: 불릿/용어풀이/소제목/톤/시사점/자연어비중. C7~C10: 라벨형 소제목/영문 직역/100자+ 문장/위트 인용. **C11~C20**: C11 `한 줄 평가:` 콜론 뒤 ≤30자, C13 결론 선행 박스, C14 벤치마크 비교 5건+, C15 5단 메커니즘(`→` 카운트), C19 좋은 패턴(수치+델타+출처, `→`·`+X% YoY` 30건+). **목표는 톤 의존**: 위닝펀드 장식 톤 95+ / 참고-리포트 톤(`/wf-report` 2026-06 권장) 85±. C10 위트인용·C13 한줄평가 등은 장식이라 참고-리포트 톤에선 빠짐(정상). KR/US 공통 |
@@ -241,6 +243,21 @@ out_path = f'_tmp_r{idx}_{short}.txt'
 | `source_health.py` | **외부 소스 헬스체크.** KIS/DART/FnGuide/FDR/yfinance/SEC/한경 7종을 두드린다. **응답이 왔다고 살아있다고 보지 않는다** -- 에러페이지 감지(200 이어도 짧거나 에러 문구면 실패) + **서로 다른 두 종목을 조회해 결과가 실제로 다른지 확인**(기본 페이지 반환 함정) + 일시 5xx 는 2회 재시도. `/research` STEP 1 진입 전 실행 권장 |
 | `macro_data.py` | FRED(US) / ECOS(KR) 매크로 시계열. `FRED_API_KEY` 는 통합 .env 에 있다 |
 | `dart_quarterly.py` | **DART 분기 실적.** `thstrm_amount`=당분기 3개월 / `thstrm_add_amount`=누적, 4Q 는 연간-3Q누적 역산 + 검산. `--compare` 로 리포트 분기표와 1:1 대조(v5.4 규칙 19 자동화). 손익계산서가 IS 없이 **CIS 만** 있는 회사(에코프로)도 처리 |
+
+### v5.9~v5.16 신설 (2026-09, 수상작 정독 + LS일렉트릭 실전 검증)
+
+| Script | Purpose |
+|---|---|
+| `source_coverage.py` | **1차 출처에 있는데 본문이 안 쓴 것을 잡는다.** LS일렉트릭 v1 이 검증 4종을 전부 통과하고 C 99점을 받고도 틀렸다 -- 영업활동현금흐름 -819.9억 / 부문정보 연결조정 / 진행기준 추정변경이 **이미 받아 둔 반기보고서 안**에 있었는데 한 줄도 안 썼다. 기존 검증기는 "쓴 숫자가 맞는가"를 보지 **"써야 할 것을 봤는가"를 안 본다.** STEP 6 의무, 0 FAIL 필수 |
+| `section_rubric.py` | **(v5.15)** 애널리스트 6축(산업/기업/투자포인트/리스크/재무/밸류)에 **필수 도구가 붙었는지**만 본다. 문장은 verify_style, 수치는 verify_numbers 가 이미 본다. 리포트를 애널리스트 리포트로 놓고 채점하니 **이미 규칙으로 있던 도구가 세 군데 빠져 있었다** -- 밸류의 DCF·민감도(Q1/Q2), 투자포인트의 bottom-up 산식(v5.10 규칙 3), 리스크의 확률·영향 정량. **규칙이 없어서가 아니라 실행되지 않아서다.** '안 쓰는 이유를 본문에 밝히면 통과'(적자기업 DCF). STEP 6 의무, 0 FAIL 필수 |
+| `corp_name_resolver.py` | **종목명 표기 흡수.** DART 등록명(엘에스일렉트릭) · 증권가 표기(LS ELECTRIC) · 6자리 코드를 모두 받는다. `get_corp_code('LS일렉트릭')` 이 죽으면 `dart_quarterly` 까지 같이 죽어 **분기 실측이 통째로 빈다.** `dart_api` 와 `fetch_broker_reports` 양쪽에 연결됨 |
+| `price_cycles.py` | 과거 주가 사이클(ZigZag). **큰 움직임이 조각나 사라지는 것을 막는 `_merge_noise` 포함** -- LS일렉트릭 -41.0% 하락이 중간 반등 때문에 두 조각으로 갈려 통째로 없어졌던 사고. `current` 키로 "직전 사이클 종점 이후 지금 위치"도 준다 |
+| `driver_scan.py` | 사업 구동 변수(P x Q - C)를 1차 출처에서 **원문 + file:line** 으로 추출 -> `_drivers.md`. 재무제표는 결과이고 이것이 원인이다 |
+| `ggm_check.py` | Target 배수를 자본효율(GGM)로 정당화. "업종 대비 N% 할인" 같은 임의 계수 차단 |
+| `report_charts.py` | PDF 도표 파이프라인. **논거와 연결되는 도표만** 싣고 캡션을 주장문으로 쓴다 |
+| `build_rule_index.py` | 스킬 파일(24만자)의 규칙 인덱스 자동 생성. 멱등이며 줄 번호 shift 보정 |
+
+**검증기 자체의 결함도 이때 세 건 고쳤다** -- ① B7/B8 이 `'2026E'` 의 E 를 떼고 컨센 추정치를 반기 실적과 비교 ② 인용 카운터가 v4.18 이 의무화한 인용 박스 형식을 못 셈(박스 15개인데 "0건" 경고) ③ "왜? 분석" 카운터가 키워드 **종류 수**를 세서 인과 서술이 가장 많은 리포트(65회)를 불합격시킴. **새 규칙을 만들면 그 규칙을 검증하는 코드도 같이 고쳤는지 확인한다.**
 
 **밴드 유효성 게이트가 KR 에도 생겼다** (`fdr_band.py` + `verify_numbers.py` **B23**).
 표본<3 또는 변동계수>0.6 이면 `per_band_valid: false` 이고, 그 상태로 본문이
@@ -551,6 +568,41 @@ LLM 리포트 자가검증은 **3층 분담**으로 작동하며, 각 층이 다
 
 **v4.19 (대한항공 v2 첫 Write 실패 사고)**: Claude Code Write tool은 기존 파일 존재 시 "File has not been read yet" 에러로 거부하는데, 이를 메인 에이전트가 놓치면 v1이 그대로 남고 PDF/검증/critic 모두 v1을 본다. **규칙**: 기존 `scripts/analysis_{종목명}.json` 존재 시 Write 직전 Read 1회 의무 (offset=1, limit=5도 충분). Write 직후 본문 분량 + opinion.rating + target_base 검증 한 줄 명령으로 v1 잔재 즉시 차단.
 
+## PDF 디자인 (v5.16 -- 증권사 리포트 50편 실측 기반)
+
+사용자 지적 **"다른 애널리스트 리포트 대비 너무 초라하다"** 를 실측으로 확인했다.
+보유 증권사 PDF 50편에서 `fitz` span 단위로 폰트·크기·색을 뽑았다.
+
+| 리포트 | 본문 | 폰트 | 액센트 |
+|---|---|---|---|
+| 삼성증권 기업 | 7.8pt | SFN 전용체 | 파랑 1색 |
+| 하나증권 산업 | 9.2pt | 하나체 + 경기천년제목 | 청록 + 주황 |
+| 교보(아이프로베스트) 산업 | 9.5pt | **Pretendard** | 남색 1색 |
+| 우리(변경 전) | **10pt** | Pretendard | Navy + Gold **2색** |
+
+**폰트는 바꿀 이유가 없었다** -- 교보 산업리포트가 우리와 같은 Pretendard 를 쓴다.
+차이는 **밀도**였다: 본문이 우리가 제일 컸고(성글어 보인다), 액센트가 2색이었고
+(실측 세 곳 모두 1색), 도표 밀도가 페이지당 0.23개 대 0.4~1.3개였다.
+
+**적용**: `generate_all.py` 의 **`_ANALYST_CSS`** 가 `_DETAILED_V3_CSS` **뒤에** 주입돼
+덮어쓴다. 본문 **9.2pt**, 액센트 **`#0a56d6` 1색**. 색·크기 변경은 `_ANALYST_CSS` 의
+`:root` 블록만 고치면 전파된다.
+
+- **커버 = 좌측 데이터 레일**(삼성증권형): 좌 33% 에 레이팅 배지 + 종목정보/밸류에이션/
+  3-시나리오 표, 우 67% 에 제목 · 요약 불릿 3개 · WHAT'S THE STORY 산문 · 4개년 재무표.
+  요약 불릿은 **마진 노트 -> `한 줄 평가:` -> 굵은 핵심문장 3단 fallback** 으로 뽑는다
+  (리포트마다 강조 표기가 달라 한 패턴만 보면 불릿이 1개만 나온다).
+- **본문 = 교보형**: `.section-caption` 7pt 회색 트래킹 / `.section-heading` 17pt 액센트색
+  + 하단 실선 / 본문 양쪽 정렬 / 표 헤더 액센트 연배경 + `tabular-nums`.
+
+⚠️ **커버 높이는 269mm** (`@page margin 14mm x 2`). 297mm 로 두면 **빈 페이지가 생긴다**.
+⚠️ 클래스명은 `section-caption` / `section-heading` 이다. `section-cap` / `section-title`
+로 쓰면 **조용히 안 먹는다**(실측).
+
+**CSS 를 고치면 반드시 PNG 로 눈으로 본다.** 이번에 넷이 렌더에서만 보였다 --
+배지색을 다른 함수에 고쳐 안 먹은 것, 레일 라벨 줄바꿈, 커버 높이 초과 빈 페이지,
+섹션 제목 클래스명 불일치. **전부 코드 검증은 통과했다.**
+
 ## PDF 타이포그래피 (v4.3 — Pretendard)
 
 `generate_all.py`의 `_DETAILED_V3_CSS`는 **CSS 변수 기반 폰트 시스템**을 사용한다. 맑은 고딕 시스템 폰트에서 Pretendard 웹폰트로 이전한 이유: (1) 한국 디자인 업계 사실상 표준, (2) tabular-nums 자동 정렬로 재무 테이블 가독성 향상, (3) pretendardvariable-dynamic-subset 덕에 PDF 파일 크기 -38% 감소(임베드 글리프 최소화).
@@ -577,37 +629,29 @@ html, body {
 
 **Playwright Chromium**이 렌더링 시 웹폰트를 자동 로드하므로 로컬 폰트 설치 불필요. CDN은 jsdelivr (Pretendard 공식).
 
-## 커버 페이지 레이아웃 (v4.14 -- 한화에어로 겹침·잘림 사고 후 재조정)
+## ⚠️ 커버 페이지 레이아웃 (v4.14) -- **죽은 경로다. 고치지 말 것**
 
-`generate_all.py` 의 `.full-bleed.cover` CSS는 Dashboard(핵심지표/컨센서스/수익률) + pick-box(3-Target 스펙트럼 + Current + R/R) + cover-body(회사명/tagline) + cover-footer 4개 요소가 A4 한 페이지에 들어가도록 절대 위치 좌표로 배치된다. 두산·한화에어로스페이스 리포트에서 pick-badge rating 문자열 잘림 + 천 단위 숫자 줄바꿈 + Peer 테이블 페이지 경계 잘림 사고를 수정하면서 v4.14 좌표 재조정.
+아래 좌표 규격은 `.full-bleed.cover` (Dashboard + pick-box + cover-body + cover-footer
+절대 위치 배치)에 대한 것이고, 그 HTML 을 만드는 함수는 **`_generate_summary_v2` 하나뿐인데
+어디서도 호출되지 않는다** (v3 에서 요약 PDF 가 폐지되며 끊겼다).
 
-**v4.14 최종 좌표 (A4 297mm 기준, bottom = 페이지 하단부터 거리)**:
+**현행 커버는 `.full-bleed.acover` 좌측 데이터 레일**이며 `_generate_detailed_v3` 가 만든다.
+커버를 고치려면 `_ANALYST_CSS` 의 `.acover` 블록과 `_generate_detailed_v3` 를 본다.
+`.cover` 를 고치면 **PDF 가 하나도 안 바뀐다** -- 오늘 배지색을 다른 함수에 고쳐
+안 먹었던 것과 같은 함정이다.
 
-| 요소 | bottom | 높이 제약 | 설명 |
-|---|---|---|---|
-| cover-body (회사명+tagline) | (flow) | ~45mm | margin-top 10mm, h1 36pt, tagline 12pt |
-| **Dashboard** | **48mm** | `max-height: 30mm` (overflow hidden) | `dash-block font 6.2pt / line-height 1.25` |
-| **pick-box** | **10mm** | `min-height: 22mm / max-height: 32mm` | Current/R/R 표시 여유 확보 |
-| cover-footer | 2mm | ~6mm | font 5.5pt |
+<details><summary>구 v4.14 좌표 (이력용, 적용 대상 없음)</summary>
 
-**Dashboard ↔ pick-box 간격** ≥ **6mm** (48 − (10+32) = 6). pick-box max-height 32mm 내에 HOLD 배지 + BEAR/BASE/BULL + Current + R/R 가 들어감.
+Dashboard bottom 48mm / max-height 30mm · pick-box bottom 10mm / max-height 32mm ·
+cover-footer 2mm · h1 36pt. pick-badge 11pt + `white-space: normal`,
+target-cell `.t-val` 9.5pt + `nowrap`.
 
-**v4.14 핵심 변경 (v4.7 대비)**:
-- **pick-badge**: `font-size: 16pt → 11pt`, `white-space: normal`, padding 축소 -- "HOLD with downside bias" 같은 긴 rating 문자열 잘림 방지 (단 **rating 자체는 "HOLD/BUY/SELL" 1~3단어로 유지**)
-- **target-cell .t-val**: `font-size: 12pt → 9.5pt (base 16→12pt)`, `white-space: nowrap` -- "1,000,000원" 줄바꿈 방지
-- **pick-box max-height**: `25mm → 32mm` -- Current/R/R 라인 포함 여유 확보
-- **Dashboard**: `max-height: 30mm` + `overflow: hidden` 강제, `dash-row white-space: nowrap` -- "(조원)" 같은 줄바꿈 방지
-- **h1.stock-title**: `40pt → 36pt`, cover-body margin-top `12mm → 10mm` -- 상단 여유 축소로 Dashboard 공간 확보
+</details>
 
-**서로 연결된 크기 제약**: 이 값 중 하나라도 증가시키면 겹침 재발 -- 변경 시 모든 블록 세로 합 재계산 필수.
-
-**사고 재발 방지 원칙 (v4.14 확장)**:
-- Dashboard bottom **48mm 유지**. pick-box max-height 32mm 초과 금지
-- **pick-badge 내부 rating 문자열은 1~3단어 짧게** (analysis.json `opinion.rating` = "HOLD"/"BUY"/"SELL", 상세는 `opinion.type` 에)
-- **target-cell .t-val nowrap 절대 해제 금지** (숫자 줄바꿈 원인)
-- **peers 배열 최대 6개 (본 종목+5), 연결 자회사 제외** -- 페이지 2 Peer 테이블 경계 잘림 방지
-- **각 peer.note 25자 이하** -- Peer 셀 높이 증가 방지
-- 새 종목 리포트 생성 후 **페이지 1 + 페이지 2 모두 육안 확인 필수** (`fitz`로 PNG 추출하여 확인)
+**지금도 유효한 것 (디자인 무관, analysis.json 제약)**:
+- `opinion.rating` 은 "HOLD"/"BUY"/"SELL" 1~3단어. 상세는 `opinion.type` 에.
+- `peers` 최대 6개(본 종목+5), 연결 자회사 제외. 각 `peer.note` 25자 이하.
+- 새 리포트 생성 후 **페이지 1 + 본문 1장을 `fitz` PNG 로 육안 확인** (v5.16 규칙 4).
 
 ## Windows 환경 주의
 

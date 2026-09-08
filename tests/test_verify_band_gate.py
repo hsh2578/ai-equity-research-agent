@@ -187,6 +187,19 @@ eq(check_b24_targets_in_body({'target_base': 0, 'target_bear': None}, {'s': ''})
    "값이 없으면 판정 대상이 아니다")
 eq(check_b24_targets_in_body({}, {'s': 'x'}), [], "opinion 이 비면 빈 목록")
 
+
+# --- 추정 열은 실적과 비교하지 않는다 (B7/B8) ---
+# 실측 사고(2026-09-08 LS일렉트릭): 헤더 '2026E' 에서 E 를 떼고 비교해
+# 컨센서스 EPS 3,588원을 financial_summary 의 **반기 누적** 1,594원과 맞대 FAIL.
+from verify_numbers import is_estimate_col  # noqa: E402
+
+eq(is_estimate_col('2026E'), True, "'2026E' 는 추정 열")
+eq(is_estimate_col('2027F'), True, "'2027F' 도 추정 열")
+eq(is_estimate_col('2026/12(E)'), True, "'(E)' 표기도 추정 열")
+eq(is_estimate_col('2025'), False, "연도만 있으면 실적 열")
+eq(is_estimate_col('항목'), False, "머리글은 추정 열이 아니다")
+eq(is_estimate_col(None), False, "None 은 추정 열이 아니다")
+
 print(f"\n{'=' * 60}")
 print(f"  verify_numbers B23 밴드 게이트 테스트: {_passed}개 통과 / {len(_failed)}개 실패")
 print(f"{'=' * 60}")

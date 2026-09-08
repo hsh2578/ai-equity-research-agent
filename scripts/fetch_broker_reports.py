@@ -82,14 +82,29 @@ def clamp_workers(workers):
     return workers, None
 
 
+def keyword_variants(keyword):
+    """통용명과 증권가 표기가 다른 종목을 함께 찾는다.
+
+    실측 사고(2026-09-08): 'LS일렉트릭' 으로 2,161건을 훑어 **매칭 0건**이었다.
+    한경 컨센서스의 리포트 제목은 전부 'LS ELECTRIC(010120)' 표기였기 때문이다.
+    정독 의무(v5.10 규칙 2)가 이름 한 줄 때문에 통째로 건너뛰어진다.
+    DART 조회와 같은 뿌리의 문제라 같은 resolver 를 쓴다.
+    """
+    if not keyword:
+        return []
+    try:
+        from corp_name_resolver import variants
+        return variants(keyword)
+    except Exception:
+        return [keyword]
+
+
 def keyword_hit(r, keyword):
-    """제목/작성자/발행사에 키워드가 걸리나."""
+    """제목/작성자/발행사에 키워드(또는 그 표기 변형)가 걸리나."""
     if not keyword:
         return True
-    k = keyword.lower()
-    return (k in (r.title or '').lower()
-            or k in (r.author or '').lower()
-            or k in (r.publisher or '').lower())
+    hay = ' '.join(((r.title or ''), (r.author or ''), (r.publisher or ''))).lower()
+    return any(v.lower() in hay for v in keyword_variants(keyword))
 
 
 def matches(r, keyword, category):
