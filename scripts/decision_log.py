@@ -107,6 +107,27 @@ def _is_pending_tag(tag):
     return 'pending' in _tag_fields(tag)[3:4]
 
 
+
+def _call_key(block):
+    """블록에서 **채점에 쓰이는 부분만** 뽑는다 -- 등급과 목표가.
+
+    헤더의 등급 칸 + DECISION 의 '목표가:' 줄. 논지 문장은 일부러 뺀다.
+    """
+    text = (block or '').strip()
+    rating = ''
+    if text.startswith('['):
+        head = text.splitlines()[0]
+        parts = [p.strip() for p in head.strip('[]').split('|')]
+        if len(parts) >= 3:
+            rating = parts[2]
+    targets = ''
+    for ln in text.splitlines():
+        if ln.strip().startswith('목표가:'):
+            targets = ln.strip()
+            break
+    return (rating, targets)
+
+
 class DecisionLog:
     def __init__(self, path=DEFAULT_LOG, max_entries=None):
         self.path = path
@@ -141,6 +162,7 @@ class DecisionLog:
 
         - 내용이 같으면 SKIPPED (진짜 멱등)
         - 등급이나 목표가가 바뀌었으면 REVISED (기존 항목을 갈아끼운다)
+        - 논지 문장만 바뀌었으면 REFRESHED (저장은 갱신하되 콜은 그대로)
         - 이미 정산된 항목은 LOCKED (사후 등급 변경 금지)
         """
         entry = self._build_entry(name, trade_date, rating, thesis, targets,
@@ -164,12 +186,16 @@ class DecisionLog:
             parts = [p.strip() for p in header.strip('[]').split('|')]
             if len(parts) >= 4 and parts[3] != 'pending':
                 return 'LOCKED'
+            # 등급/목표가가 실제로 바뀌었는가, 아니면 본문만 손봤는가.
+            # 블록 전체를 비교하면 문장 손질도 '콜 변경'으로 세어져
+            # 나중에 적중률·변경 횟수 통계가 오염된다(삼성SDI 실측).
+            call_changed = (_call_key(blk) != _call_key(entry))
             blocks[i] = ('\n\n' + entry) if blk.startswith('\n\n') else entry
             tmp = self.path + '.tmp'
             with open(tmp, 'w', encoding='utf-8') as f:
                 f.write(SEPARATOR.join(blocks))
             os.replace(tmp, self.path)
-            return 'REVISED'
+            return 'REVISED' if call_changed else 'REFRESHED'
 
         with open(self.path, 'a', encoding='utf-8') as f:
             f.write(entry + SEPARATOR)
@@ -177,7 +203,7 @@ class DecisionLog:
 
     def store_decision(self, *a, **k):
         """하위 호환 래퍼. True 는 새로 쓰였다는 뜻(ADDED/REVISED)."""
-        return self.record(*a, **k) in ('ADDED', 'REVISED')
+        return self.record(*a, **k) in ('ADDED', 'REVISED', 'REFRESHED')
 
     def update_with_outcome(self, name, trade_date, raw_return, alpha_return,
                             holding_days, reflection='', resolution_date=None):
@@ -473,7 +499,8 @@ def cmd_record(args):
                  'bull': op.get('target_bull')},
         price=price.get('current'), market=market)
     label = {'ADDED': ('OK', '기록'),
-             'REVISED': ('OK', '기존 항목 갱신 -- 등급/목표가가 바뀌었다'),
+             'REVISED': ('OK', '기존 항목 갱신 -- **등급/목표가가 바뀌었다**'),
+             'REFRESHED': ('OK', '본문만 갱신 -- 등급·목표가는 그대로'),
              'SKIPPED': ('SKIP', '내용 동일 (멱등)'),
              'LOCKED': ('WARN', '이미 정산된 항목이라 갱신하지 않았다')}[result]
     print(f"[{label[0]}] {name} {trade_date} {op.get('rating')} {label[1]}")

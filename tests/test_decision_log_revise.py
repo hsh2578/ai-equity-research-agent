@@ -93,6 +93,28 @@ eq(log.record('테스트종목', '2026-01-01', 'SELL', thesis='뒤늦게 수정'
 truthy('| 테스트종목 | BUY |' in open(path, encoding='utf-8').read(),
        "정산 항목의 등급은 그대로다")
 
+# --- 콜이 바뀐 것과 글이 바뀐 것을 구분한다 (2026-09-09 삼성SDI 실측) ---
+# 목표가가 570,000원 그대로인데 화면에 "등급/목표가가 바뀌었다"가 찍혔다.
+# record() 가 블록 전체를 비교해 **논지 문장만 고쳐도 REVISED** 였기 때문이다.
+# 나중에 "콜이 몇 번 바뀌었나"를 세면 문장 손질까지 섞여 통계가 오염된다.
+log.record('구분종목', '2026-05-01', 'HOLD', thesis='처음 논지',
+           targets=T, price=1000, market='KR')
+eq(log.record('구분종목', '2026-05-01', 'HOLD', thesis='논지만 다시 씀',
+              targets=T, price=1000, market='KR'), 'REFRESHED',
+   "**논지만 바뀌면 REFRESHED -- 콜은 그대로다**")
+eq(log.record('구분종목', '2026-05-01', 'SELL', thesis='논지만 다시 씀',
+              targets=T, price=1000, market='KR'), 'REVISED',
+   "등급이 바뀌면 REVISED")
+eq(log.record('구분종목', '2026-05-01', 'SELL', thesis='논지만 다시 씀',
+              targets=T2, price=1000, market='KR'), 'REVISED',
+   "목표가가 바뀌어도 REVISED")
+eq(log.record('구분종목', '2026-05-01', 'SELL', thesis='논지만 다시 씀',
+              targets=T2, price=1000, market='KR'), 'SKIPPED',
+   "아무것도 안 바뀌면 여전히 SKIPPED (멱등)")
+truthy('| 구분종목 | SELL |' in open(path, encoding='utf-8').read(),
+       "REFRESHED 든 REVISED 든 파일 내용은 최신으로 갱신된다")
+
+
 print(f"\n{'=' * 60}")
 print(f"  decision_log 재기록 테스트: {_passed}개 통과 / {len(_failed)}개 실패")
 print(f"{'=' * 60}")
