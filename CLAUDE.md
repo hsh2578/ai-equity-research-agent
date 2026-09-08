@@ -69,6 +69,9 @@ python scripts/fdr_band.py {종목명} {종목코드}
 python scripts/volatility_beta.py {종목명} {종목코드}
 python scripts/peer_snapshot.py {종목명} {업종키}  # semicon/auto/retail/finance 등
 
+# KIS 모의 서버가 HTTP 500 이면 실전(9443)으로 재실행 (v5.18)
+python scripts/_run_with_real_kis.py scripts/financial_summary.py {종목명} {종목코드}
+
 # 검증 3종 병렬 (STEP 6, KR/US 자동 분기)
 python scripts/verify_numbers.py {종목명}    # KR
 python scripts/verify_numbers_us.py {TICKER} # US (B12~B15 추가)
@@ -80,7 +83,7 @@ python scripts/section_rubric.py {종목명}    # v5.15 애널리스트 6축 (0 
 # 사업보고서 핵심 인용 추출
 python scripts/report_extractor.py data/{종목명}/data_dart_reports.json
 
-# 테스트 (38 스위트 -- 신규 도구는 반드시 테스트를 함께 만든다)
+# 테스트 (39 스위트 -- 신규 도구는 반드시 테스트를 함께 만든다)
 python tests/run_all.py
 
 # 스킬 코드 블록 또는 scripts/* 변경 후 문법 체크
@@ -591,6 +594,37 @@ X >= (0.55 x T - S) / 0.45
 (중복은 dedup 이 못 잡는다 -- 마진 노트와 마무리 인용이 같은 뜻이면 겹친다).
 PDF 를 뽑으면 **커버 불릿 3개가 다 찼는지** 눈으로 확인한다.
 
+## ⚠️ US 종목 표기 규약 (v5.18 -- BE 실측)
+
+미국 종목은 한국 종목과 두 곳에서 형식이 다르다. 어디에도 적혀 있지 않아
+매번 다시 알아내야 했다.
+
+**① `price.market_cap_num` 은 `$B x 100,000`.**
+`verify_numbers_us` B1 이 `market_cap_num / 100000` 을 `$B` 로 읽는다.
+
+| 종목 | market_cap | market_cap_num |
+|---|---|---|
+| AMD | $567.07B | 56,707,000 |
+| NFLX | $393.67B | 39,367,000 |
+| BE | $82.5B | **8,272,000** |
+
+억원 값을 넣으면 86% 오차로 FAIL 이 난다(BE v1 실측).
+
+**② `data/{TICKER}/data_kis_us.json` 은 KIS 래퍼 한글 키 형태여야 한다.**
+
+```json
+{ "current_price": { "현재가": 280.235, "시가총액(억원)": 1138461, "PER(배)": 368.55, ... } }
+```
+
+`financial_summary.json` 의 `kis` 블록을 그대로 복사하면 `current_price` 가
+float 이라 **`verify_numbers_us` 가 AttributeError 로 죽는다**(지금은 가드가
+있어 경고 후 진행). 이 파일의 존재가 KR/US 분기 판정에도 쓰인다.
+
+**③ 기업분석에 "최대주주가 없다"고 쓴다.** `section_rubric` 이
+`최대주주|지배주주|지주회사` 를 찾는데 분산 소유 미국 기업에는 지배주주가
+없다. 검증기를 느슨하게 하는 대신 **"최대주주가 없는 분산 소유 구조"** 라고
+적고 기관·내부자·공매도 비중으로 그 자리를 채운다.
+
 ## PDF 디자인 (v5.16 -- 증권사 리포트 50편 실측 기반)
 
 사용자 지적 **"다른 애널리스트 리포트 대비 너무 초라하다"** 를 실측으로 확인했다.
@@ -619,6 +653,9 @@ PDF 를 뽑으면 **커버 불릿 3개가 다 찼는지** 눈으로 확인한다
   + 하단 실선 / 본문 양쪽 정렬 / 표 헤더 액센트 연배경 + `tabular-nums`.
 
 ⚠️ **커버 높이는 269mm** (`@page margin 14mm x 2`). 297mm 로 두면 **빈 페이지가 생긴다**.
+⚠️ `p, li` 의 **`orphans:3 / widows:3`** 을 지운다면 빈 페이지가 돌아온다 --
+`_DETAILED_V3_CSS` 의 `widows:2` 로는 문단 끝 두 줄이 넘어가는 것을 못 막는다
+(BE v1 실측: 8페이지에 18자만 남았다).
 ⚠️ 클래스명은 `section-caption` / `section-heading` 이다. `section-cap` / `section-title`
 로 쓰면 **조용히 안 먹는다**(실측).
 

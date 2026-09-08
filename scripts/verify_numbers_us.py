@@ -83,7 +83,13 @@ def main(ticker):
     fins = fs.get('financials', {})
     yf = fs.get('yfinance', {})
     forward = fs.get('forward', {})
-    kis_p = (kis.get('current_price', {}) if kis else {})
+    # data_kis_us.json 이 다른 형태로 저장돼 있으면 dict 가 아닐 수 있다.
+    # 초판은 그대로 .get 을 불러 AttributeError 로 죽었다 -- 검증이 통째로 멈춘다.
+    kis_p = (kis.get('current_price') if isinstance(kis, dict) else None)
+    if not isinstance(kis_p, dict):
+        if kis_p is not None:
+            print('  [WARN] data_kis_us.json 의 current_price 가 dict 가 아니다 -- KIS 대조를 건너뛴다')
+        kis_p = {}
 
     years = sorted([y for y in fins.keys() if y.isdigit()])
     latest = years[-1] if years else None

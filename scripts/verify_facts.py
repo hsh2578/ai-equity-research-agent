@@ -131,6 +131,42 @@ def check_d3_consensus_table(analysis, fs):
     return {'status': 'CHECKED', 'checked': len(brokers_real), 'fails': fails}
 
 
+
+def _match_peer(peer, name):
+    """스냅샷에서 이 이름에 맞는 항목을 찾는다.
+
+    부분문자열 관계인 두 종목(피에스케이 / 피에스케이홀딩스)이 같은 표에 있으면
+    `in` 매칭은 사전 순서에 따라 엉뚱한 쪽에 붙는다. 실측으로 한 번 났다.
+    그래서 ① 정확 일치 ② 공백·괄호 제거 후 정확 일치 ③ 부분 일치 중
+    **이름 길이 차이가 가장 작은 것** 순으로 본다.
+    """
+    if not name:
+        return None
+    if name in peer:
+        return peer[name]
+
+    def norm(x):
+        return ''.join(x.split()).replace('(', '').replace(')', '')
+
+    n = norm(name)
+    for k, v in peer.items():
+        if norm(k) == n:
+            return v
+    # 부분 일치는 ① 질의가 후보 안에 들어가는 쪽(약칭 -> 정식명)을 먼저 보고
+    # ② 그다음 이름 길이가 가장 가까운 쪽을 고른다.
+    # ①이 없으면 '한화에어로'가 '한화에어로스페이스'가 아니라 '한화'에 붙는다(실측).
+    cands = []
+    for k in peer:
+        nk = norm(k)
+        if n in nk:
+            cands.append((0, abs(len(nk) - len(n)), k))
+        elif nk in n:
+            cands.append((1, abs(len(nk) - len(n)), k))
+    if not cands:
+        return None
+    return peer[min(cands)[2]]
+
+
 def check_d4_peer_table(analysis, peer):
     """D4: s05 peers 테이블이 _peer_snapshot.json과 일치하는가"""
     peers_report = analysis.get('peers', []) or []
@@ -142,12 +178,8 @@ def check_d4_peer_table(analysis, peer):
         name = p_report.get('name', '').strip()
         if '본' in name or '본 종목' in name:
             continue
-        # 원본에서 찾기
-        real = None
-        for real_name, real_data in peer.items():
-            if real_name in name or name in real_name:
-                real = real_data
-                break
+        # 원본에서 찾기 -- 정확 일치가 부분 일치를 이긴다
+        real = _match_peer(peer, name)
         if not real:
             fails.append({'peer': name, 'issue': '_peer_snapshot에 없음'})
             continue

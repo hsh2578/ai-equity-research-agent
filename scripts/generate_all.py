@@ -2552,6 +2552,9 @@ _ANALYST_CSS = r"""
   --pos:#12694a; --neg:#c0392b;
 }
 html, body{ font-size:9.2pt !important; line-height:1.62 !important; color:var(--ink); }
+/* 문단 끝 한두 줄만 넘어가 거의 빈 페이지가 생기는 것을 막는다
+   (BE v1 실측: 8페이지에 18자만 남았다). _DETAILED_V3_CSS 의 2 로는 부족했다. */
+p, li{ orphans:3 !important; widows:3 !important; }
 
 /* ---- 커버: 좌측 데이터 레일 + 우측 본문 (삼성증권형) ---- */
 .full-bleed.acover{
