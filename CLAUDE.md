@@ -84,7 +84,7 @@ python scripts/rating_distribution.py       # v5.19 등급·목표가 편향 (�
 # 사업보고서 핵심 인용 추출
 python scripts/report_extractor.py data/{종목명}/data_dart_reports.json
 
-# 테스트 (40 스위트 -- 신규 도구는 반드시 테스트를 함께 만든다)
+# 테스트 (41 스위트 -- 신규 도구는 반드시 테스트를 함께 만든다)
 python tests/run_all.py
 
 # 스킬 코드 블록 또는 scripts/* 변경 후 문법 체크
@@ -605,12 +605,15 @@ PDF 를 뽑으면 **커버 불릿 3개가 다 찼는지** 눈으로 확인한다
 **10 FAIL** 이 나왔는데, 그 상태로 "6개 전부 0 FAIL"이라고 보고했다.
 
 ```bash
-for f in scripts/analysis_*.json; do
-  n=$(basename "$f" .json); n=${n#analysis_}
-  [ "$n" = "template" ] && continue
-  printf '%-18s ' "$n"; python scripts/{새검증기}.py "$n" 2>&1 | grep -E 'FAIL [0-9]+건'
-done
+python scripts/fleet_audit.py                  # 전 종목 x 검증기 4종
+python scripts/fleet_audit.py --since 2026-09-01
+python scripts/fleet_audit.py --checker section_rubric
 ```
+
+**첫 전수 감사 결과(2026-09-09): 43건 중 35건 결함.** 대부분 그 검증기가
+없던 시점에 쓴 4~6월 리포트다. **소급 수정하지 않는다** -- 데이터가 5개월
+지나 v5.4 규칙 8 상 전면 재수집 대상이고, 그것은 수정이 아니라 새로 쓰는
+일이다. 상세는 `docs/known-report-defects.md`.
 
 **② `_fix_*.py` 앵커는 위치를 먼저 확인한다.** 소제목 이름으로 앵커를 잡았다가
 투자포인트 내용이 산업분석에 들어갔다(LULU). "구조적 변화", "경쟁 구도" 같은
