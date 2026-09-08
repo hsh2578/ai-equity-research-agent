@@ -2612,9 +2612,13 @@ _DETAILED_V3_CSS = r"""
     break-before: page;
     page-break-inside: auto;
     margin-top: 0;
-    margin-bottom: 5mm;
-    padding-bottom: 3mm;
-    border-bottom: 1px solid #edf0f4;
+    /* 섹션 하단 여백/구분선을 두면, 섹션이 페이지를 거의 채웠을 때 그 여백만
+       다음 페이지로 넘어가고 이어지는 섹션의 page-break-before 가 또 넘겨서
+       **빈 페이지**가 생긴다 (LULU v2 21p 실측). 각 섹션이 어차피 새 페이지에서
+       시작하므로 하단 구분선은 시각적으로도 불필요하다. */
+    margin-bottom: 0;
+    padding-bottom: 0;
+    border-bottom: none;
   }
   .section-block:first-of-type {
     /* 첫 섹션은 Executive Summary 다음 자연 흐름 */
