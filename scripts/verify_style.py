@@ -247,13 +247,58 @@ def check_c9_long_sentence(text):
 #   숫자는 그 주장의 근거이지 글 자체가 아니다.
 # ============================================================
 
-# verify_style 은 구 v5.1 스킴 키를 읽는다 (CLAUDE.md "v5.0 키 스킴 분열" 참조)
+# verify_style 은 구 v5.1 스킴 키를 읽어 왔다 (CLAUDE.md "v5.0 키 스킴 분열" 참조).
+# 아래 표로 정규 12키 <-> alias 를 흡수해, 어느 스킴으로 쓰였든 같은 값을 낸다.
+CANON12 = ('s01_opinion_thesis', 's02_thesis_catalysts', 's03_company_overview',
+           's04_industry_competition', 's05_management_fieldcheck', 's06_financial',
+           's07_valuation', 's08_esg', 's09_scenarios_risks',
+           's10_earnings_consensus', 's11_supply_shareholder', 's12_action_plan')
+
+_ALIAS = {'s01_opinion_thesis': 's01_opinion',
+          's02_thesis_catalysts': 's02_investment_points',
+          's04_industry_competition': 's04_industry',
+          's06_financial': 's08_financial',
+          's07_valuation': 's09_valuation',
+          's09_scenarios_risks': 's10_scenarios_risks',
+          's10_earnings_consensus': 's11_earnings_consensus'}
+
+STORY_CANON = ('s02_thesis_catalysts', 's03_company_overview', 's04_industry_competition')
+
+# 구 이름 (외부 참조 호환)
 STORY_KEYS = ('s02_investment_points', 's03_company_overview', 's04_industry')
 FINANCE_KEYS = ('s08_financial', 's09_valuation')
 
-STORY_RATIO_MIN = 1.5     # 스토리 3섹션 합 / 재무 2섹션 합
+# --- 위닝펀드 수상작 12편 실측에서 나온 상수 ---
+# 산업 26% / 기업 19% / 투자포인트 17% = 스토리 62%, 재무 12%, 밸류 16%
+STORY_SHARE_MIN = 55      # 62% 에서 7%p 여유
+HEADING_MAX = 1800        # 수상작 페이지당 1,000~1,500자 (한 페이지 = 한 주장)
+ANCHOR_MIN_LEN = 200      # 이보다 짧은 블록은 산업->종목 착지 의무 면제
+UNCOUNTED_MAX = 10        # 분모 밖 본문이 이 %를 넘으면 스키마 불명 -> 판정하지 않는다
+
+# v5 에서 PDF 에 렌더되지 않는 부속 섹션 (verify_facts D6 용). 분모 밖이어도 정상.
+_BENIGN_EXTRA = ('s13_thesis', 's14_short_thesis')
+
 TABLE_MAX = {'s02_investment_points': 35, 's03_company_overview': 35,
              's04_industry': 35, 's08_financial': 45, 's09_valuation': 45}
+
+
+def section_text(sections, canon):
+    """정규 키가 **존재하면** 그 값이 최종이다. alias 는 정규 키가 없을 때만 본다.
+
+    v5.9 병합 구조에서 호스트로 옮긴 섹션은 원본을 빈 문자열로 비운다.
+    "비어 있으면 alias" 로 만들면 그 내용이 alias 를 통해 되살아나 분모에
+    이중 계산된다 (와이지엔터 v7 실측: 스토리 56.9% 가 49.9% 로 잘못 나옴).
+    """
+    if canon in sections:
+        return sections.get(canon) or ''
+    a = _ALIAS.get(canon)
+    return (sections.get(a) or '') if a else ''
+
+
+def prose_len(text):
+    """표 행을 뺀 산문 길이. 도표는 페이지에 같이 들어가므로 분량으로 세지 않는다."""
+    return sum(len(ln) for ln in (text or '').splitlines()
+               if not ln.strip().startswith('|'))
 
 
 def table_ratio(text):
@@ -273,17 +318,133 @@ def table_ratio(text):
 
 
 def check_c21_story_weight(sections):
-    """C21: 스토리(투자포인트+기업분석+산업분석) 대 재무+밸류 분량 비율.
+    """C21: **본문 전체 대비** 스토리(투자포인트+기업+산업) 비중(%).
 
-    반환: (비율, 통과여부). 재무 섹션이 없으면 (None, None) -- 판정 불가다.
-    결측을 0 으로 때우면 "재무가 0자라 무한대 통과" 가 되어 게이트가 죽는다.
+    반환: (비중%, 통과여부). 본문이 없으면 (None, None).
+
+    구버전은 분모를 재무+밸류로 잡았는데 겨눈 곳이 틀렸다. 실측에서 재무 비중은
+    수상작(12.3%)과 우리(11.9%)가 거의 같았고, 진짜 원인은 수상작에 존재하지도
+    않는 섹션 5개(ESG·실행계획·수급·경영진·컨센)가 본문의 32% 를 먹은 것이었다.
+    분모를 재무로 잡으면 그 32% 가 보이지 않는다.
     """
-    story = sum(len(sections.get(k) or '') for k in STORY_KEYS)
-    fin = sum(len(sections.get(k) or '') for k in FINANCE_KEYS)
-    if fin == 0:
+    counted = set()
+    total = 0
+    for k in CANON12:
+        if k in sections:
+            # 정규 키가 있으면 그 값이 최종 (빈 문자열 = 호스트로 병합 완료)
+            counted.add(k)
+            total += len(sections.get(k) or '')
+            continue
+        a = _ALIAS.get(k)
+        if a and (sections.get(a) or '').strip():
+            counted.add(a)
+            total += len(sections[a])
+    if total == 0:
         return None, None
-    ratio = story / fin
-    return ratio, ratio >= STORY_RATIO_MIN
+
+    # 분모 밖에 본문이 크게 남아 있으면 다른 스키마다. **PASS 로 때우지 않는다.**
+    # 실측(2026-09-08): 구 v4 리포트에 그대로 돌렸더니 삼성SDI 83.3% PASS,
+    # 한화에어로 54.4% 가 나왔는데 둘 다 거짓값이었다. 삼성SDI 는 s05_competition
+    # /s09_risk/s15_beat_miss 등 5,588자가 통째로 분모 밖이었다.
+    # alias 키는 CLAUDE.md 가 재생성을 의무화한 사본이라 분모 밖이어도 정상이다.
+    # (정규 키가 이미 세어졌으므로 여기서 또 세면 이중 계산이 된다.)
+    uncounted = sum(len(v or '') for k, v in sections.items()
+                    if k not in counted and k not in _BENIGN_EXTRA
+                    and k not in set(_ALIAS.values()))
+    if uncounted > total * UNCOUNTED_MAX / 100:
+        return None, None
+
+    story = sum(len(section_text(sections, k)) for k in STORY_CANON)
+    share = story / total * 100
+    return share, share >= STORY_SHARE_MIN
+
+
+def split_heading_blocks(text):
+    """`####` 소제목 단위로 (소제목, 본문) 분리. 소제목이 없으면 [('', 전체)]."""
+    if not (text or '').strip():
+        return []
+    parts = re.split(r'^\s*#{3,4}\s*(.+?)\s*$', text, flags=re.M)
+    if len(parts) == 1:
+        return [('', text)]
+    out = []
+    if parts[0].strip():
+        out.append(('', parts[0]))
+    for k in range(1, len(parts) - 1, 2):
+        out.append((parts[k].strip(), parts[k + 1]))
+    return out
+
+
+def check_c23_heading_blocks(sections):
+    """C23: 스토리 3섹션의 소제목 블록이 HEADING_MAX 를 넘는지.
+
+    수상작은 한 페이지 = 한 소제목 = 한 주장이다. 한 소제목 아래 1,800자가
+    넘으면 주장이 뭉쳐 있다는 뜻이다. 반환: [(섹션, 소제목, 산문길이), ...]
+    """
+    over = []
+    for k in STORY_CANON:
+        t = section_text(sections, k)
+        for title, body in split_heading_blocks(t):
+            n = prose_len(body)
+            if n > HEADING_MAX:
+                over.append((k, title, n))
+    return over
+
+
+
+# --- C25 (v5.11): 문단마다 결론 한 줄 -------------------------------
+# 실측: 위닝펀드 수상작 14편 중 **12편**이 본문 옆 여백에 그 문단의 결론을
+# 한 줄로 단다("실질은 EPC 기업인", "①AI 투자→ ②PCB", "계속된 매출 성장과
+# 수주잔고 -> 성장 사이클 유지"). 레이아웃 장식이 아니라 글쓰기 규율이다 --
+# 한 문단의 결론을 한 줄로 못 쓰면 그 문단에는 논지가 없다.
+MARGIN_PREFIX = '> **한 줄:**'
+MARGIN_MAX = 40
+
+
+def margin_note_of(block_body):
+    """블록 본문에서 마진 노트 문구를 뽑는다. 없으면 None."""
+    for ln in (block_body or '').splitlines():
+        t = ln.strip()
+        if t.startswith(MARGIN_PREFIX):
+            return t[len(MARGIN_PREFIX):].strip()
+    return None
+
+
+def check_c25_margin_notes(sections):
+    """스토리 3섹션의 각 소제목 블록에 결론 한 줄이 있는가.
+
+    반환: [(섹션키, 소제목), ...]  -- 없거나 너무 긴 블록
+    """
+    bad = []
+    for k in STORY_CANON:
+        t = section_text(sections, k)
+        if not (t or '').strip():
+            continue
+        for title, body in split_heading_blocks(t):
+            if not title:
+                continue
+            note = margin_note_of(body)
+            if note is None or len(note) > MARGIN_MAX:
+                bad.append((k, title))
+    return bad
+
+
+def check_c24_industry_anchor(industry_text, stock_name):
+    """C24: 산업분석의 각 소제목이 본 종목으로 착지하는가. 반환: 미착지 소제목 목록.
+
+    수상작 실측(와이지엔터 p4 끝): "와이지엔터테인먼트도 이 세 흐름에서 벗어나
+    있지 않으며, 4사 중 가장 낮은 PER 16배는 세 가지 외부 요인이 한꺼번에 누른
+    결과다." 종목명이 한 번도 안 나오는 산업 소제목은 남의 산업 리포트다.
+    """
+    if not stock_name or not (industry_text or '').strip():
+        return []
+    stem = stock_name[:3]          # "와이지엔터" 와 "와이지엔터테인먼트" 를 함께 잡는다
+    miss = []
+    for title, body in split_heading_blocks(industry_text):
+        if prose_len(body) < ANCHOR_MIN_LEN:
+            continue
+        if stem not in body and stem not in title:
+            miss.append(title)
+    return miss
 
 
 def check_c22_table_overload(sections):
@@ -626,15 +787,52 @@ def main(stock_name):
         print(f"  [✓ C20] 클리셰                   {cliche_count}건")
 
     # ----- C21. 스토리텔링 비중 -----
-    _ratio, _ok = check_c21_story_weight(sections)
-    if _ratio is not None:
+    _share, _ok = check_c21_story_weight(sections)
+    if _share is None:
+        print("  [- C21] 스토리 비중              판정 불가 -- "
+              "정규 12키 밖 본문이 10% 초과(구 v4 스킴). "
+              "재작성 시 v5 12키로 맞추면 판정된다")
+    if _share is not None:
         total_checks += 1
         if not _ok:
             fail += 1
-            print(f"  [✗ C21] 스토리 비중              {_ratio:.2f}배 (1.50배+ 필요) -- "
-                  f"투자포인트+기업분석+산업분석이 재무+밸류 대비 얇다")
+            print(f"  [✗ C21] 스토리 비중              {_share:.1f}% (55%+ 필요, 수상작 실측 62%) -- "
+                  f"산업+기업+투자포인트가 본문에서 차지하는 몸집이 얇다")
         else:
-            print(f"  [✓ C21] 스토리 비중              {_ratio:.2f}배")
+            print(f"  [✓ C21] 스토리 비중              {_share:.1f}%")
+
+    # ----- C23. 소제목 단위 주장 (한 페이지 = 한 주장) -----
+    _fat = check_c23_heading_blocks(sections)
+    total_checks += 1
+    if _fat:
+        fail += 1
+        _d = ', '.join(f"{t or '(소제목없음)'} {n}자" for _k, t, n in _fat[:3])
+        print(f"  [✗ C23] 소제목 블록 과대      {_d} -- 1,800자 초과. 주장을 쪼개라")
+    else:
+        print(f"  [✓ C23] 소제목 블록          전부 1,800자 이내")
+
+    # ----- C24. 산업분석의 종목 착지 -----
+    _sn = (d.get('meta') or {}).get('stock_name', '')
+    _miss = check_c24_industry_anchor(section_text(sections, 's04_industry_competition'), _sn)
+
+    # ----- C25. 문단 결론 한 줄 -----
+    _nomargin = check_c25_margin_notes(sections)
+    total_checks += 1
+    if _nomargin:
+        fail += 1
+        _d = ', '.join(t for _k, t in _nomargin[:3])
+        print(f"  [\u2717 C25] \ubb38\ub2e8 \uacb0\ub860 \ud55c \uc904        {_d} -- "
+              f"'{MARGIN_PREFIX} ...' \ub204\ub77d/\uacfc\uc7a5 ({len(_nomargin)}\uac1c)")
+    else:
+        print(f"  [\u2713 C25] \ubb38\ub2e8 \uacb0\ub860 \ud55c \uc904        \uc804 \ube14\ub85d \ubcf4\uc720")
+    if _sn:
+        total_checks += 1
+        if _miss:
+            fail += 1
+            print(f"  [✗ C24] 산업 종목 착지        {', '.join(_miss[:3])} -- "
+                  f"종목명이 없는 산업 소제목은 남의 산업 리포트다")
+        else:
+            print(f"  [✓ C24] 산업 종목 착지        전 소제목 착지")
 
     # ----- C22. 표 과다 -----
     _over = check_c22_table_overload(sections)

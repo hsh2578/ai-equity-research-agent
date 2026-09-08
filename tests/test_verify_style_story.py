@@ -28,8 +28,7 @@ import sys
 sys.stdout.reconfigure(encoding='utf-8')
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 
-from verify_style import (table_ratio, check_c21_story_weight,
-                          check_c22_table_overload, STORY_KEYS, FINANCE_KEYS)
+from verify_style import table_ratio, check_c22_table_overload
 
 _passed = 0
 _failed = []
@@ -59,37 +58,10 @@ t = '산문 12345\n| a | b |\n산문 12345'   # 표 9자 / 전체 약 29자
 r = table_ratio(t)
 eq(0 < r < 100, True, "섞여 있으면 0~100 사이")
 
-# --- C21: 스토리(투자포인트+기업+산업) 대 재무+밸류 비율 ---
-eq(STORY_KEYS, ('s02_investment_points', 's03_company_overview', 's04_industry'),
-   "스토리 섹션은 투자포인트·기업분석·산업분석")
-eq(FINANCE_KEYS, ('s08_financial', 's09_valuation'),
-   "재무 섹션은 재무분석·밸류에이션 (verify_style 은 구 v5.1 키를 읽는다)")
-
-secs = {'s02_investment_points': 'x' * 4500,
-        's03_company_overview': 'x' * 3500,
-        's04_industry': 'x' * 3500,
-        's08_financial': 'x' * 4000,
-        's09_valuation': 'x' * 4000}
-ratio, ok = check_c21_story_weight(secs)
-close(ratio, 1.44, "11,500 / 8,000 = 1.44배")
-eq(ok, False, "1.44배는 기준 1.5 미달")
-
-secs2 = dict(secs, s04_industry='x' * 5000)
-ratio2, ok2 = check_c21_story_weight(secs2)
-close(ratio2, 1.63, "산업분석을 5,000자로 늘리면 1.63배")
-eq(ok2, True, "1.5배 이상이면 통과")
-
-# 와이지엔터 실측 (1.18배) 은 FAIL 이어야 한다
-yg = {'s02_investment_points': 'x' * 6605, 's03_company_overview': 'x' * 3564,
-      's04_industry': 'x' * 2584, 's08_financial': 'x' * 5485, 's09_valuation': 'x' * 5281}
-r_yg, ok_yg = check_c21_story_weight(yg)
-close(r_yg, 1.18, "와이지엔터 실측 1.18배")
-eq(ok_yg, False, "와이지엔터 실측은 FAIL")
-
-# 재무 섹션이 없으면 판정하지 않는다 (0 나눗셈 방지)
-eq(check_c21_story_weight({'s04_industry': 'x' * 100}), (None, None),
-   "재무 섹션이 없으면 (None, None) -- 판정 불가를 0 으로 때우지 않는다")
-eq(check_c21_story_weight({}), (None, None), "빈 dict")
+# --- C21 (SUPERSEDED) ---
+# C21 은 2026-09-08 위닝펀드 수상작 12편 실측 후 **본문 전체 대비 비중(%)** 으로
+# 재정의됐다. 분모를 재무+밸류로 잡은 구 정의는 수상작에 없는 섹션 5개가
+# 본문의 32% 를 먹는 것을 못 봤다. 새 단정은 tests/test_verify_style_wf.py 에 있다.
 
 # --- C22: 섹션별 표 과다 ---
 # 스토리 섹션은 35%, 재무/밸류는 45% 상한

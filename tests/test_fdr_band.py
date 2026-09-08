@@ -209,6 +209,30 @@ eq(notes, [], "유효하면 경고 없음")
 eq(MIN_SAMPLES, 3, "최소 표본 3개")
 near(NOISY_CV, 0.6, "변동계수 임계 0.6")
 
+
+
+# ============================================================
+# 적자 기업의 PER 밴드는 무효다 (2026-09-08 삼성SDI 실측)
+#
+#   [OK] 5Y PER: mean=22.43x, std=5.20, current=-63.66x (z=-16.57σ) valid=True
+#
+# 현재 PER 이 **음수**(적자)인데 밴드가 유효하다고 나왔다. z=-16.57σ 는
+# "역사적 초저평가" 로 읽히지만 실제로는 이익이 마이너스라 배수 자체가
+# 성립하지 않는다. 2차전지 4사 중 삼성SDI(-63.66)·LG에너지솔루션(-76.01)이
+# 모두 적자라 이 결함은 섹터 전체에 걸린다.
+#
+# 표본 개수와 변동계수만 보고 **현재값의 부호를 안 봤다.**
+# ============================================================
+
+from fdr_band import band_valid_for_current   # noqa: E402
+
+eq(band_valid_for_current(True, -63.66), False,
+   "**현재 PER 이 음수면 밴드 무효** (적자 기업)")
+eq(band_valid_for_current(True, 0.0), False, "현재 PER 0 도 무효")
+eq(band_valid_for_current(True, 22.4), True, "양수면 기존 판정 유지")
+eq(band_valid_for_current(False, 22.4), False, "이미 무효면 그대로 무효")
+eq(band_valid_for_current(True, None), False, "현재값이 없으면 판정하지 않는다")
+
 print(f"\n{'=' * 60}")
 print(f"  fdr_band (KR) 테스트: {_passed}개 통과 / {len(_failed)}개 실패")
 print(f"{'=' * 60}")

@@ -37,15 +37,49 @@ BAND_CLAIM_WORDS = ['5년 평균', '역사적 평균', '5Y 평균', '역사적 �
 BAND_DISCLAIMERS = ['의미가 없', '의미 없', '쓰지 않', '쓸 수 없', '왜곡', '해석 무의미',
                     '밴드 무효', '참고만', '신뢰할 수 없', '무의미']
 _DISCLAIMER_WINDOW = 60
+_METRIC_WINDOW = 60          # 밴드 표현 근처에서 지표명을 찾는 창
+_ALL_METRICS = ('PER', 'PBR')
 
 
-def band_claims_in(text):
+
+# --- B24 (v5.12): opinion 의 3-시나리오 목표가가 본문에 실제로 있는가 ---
+# 실측 사고(2026-09-08 한화에어로): 목표주가를 1,260,000 -> 1,320,000 으로 올릴 때
+# opinion/s01/s07 만 고치고 s09 시나리오 표와 감도·실행계획이 옛 값에 남았다.
+# 커버는 opinion 을, 본문은 sections 를 읽으므로 둘이 조용히 갈라진다.
+_B24_LABELS = (('target_bear', 'Bear'), ('target_base', 'Base'), ('target_bull', 'Bull'))
+
+
+def check_b24_targets_in_body(opinion, sections):
+    """본문에서 찾지 못한 목표가 목록. 반환 예: ['Bear 850,000', ...]"""
+    body = ' '.join(v for v in (sections or {}).values() if isinstance(v, str))
+    missing = []
+    for key, label in _B24_LABELS:
+        v = (opinion or {}).get(key)
+        if not v:
+            continue
+        try:
+            iv = int(v)
+        except (TypeError, ValueError):
+            continue
+        if f'{iv:,}' in body or str(iv) in body:
+            continue
+        missing.append(f'{label} {iv:,}')
+    return missing
+
+
+def band_claims_in(text, metrics=None):
     """본문에 쓰인 밴드 단정 표현 목록.
 
     표현이 나온 자리마다 주변 창에서 저자의 무효 선언을 찾고, 모든 등장이
     무효 선언과 함께라면 단정으로 세지 않는다.
+
+    metrics 를 주면(예: ['PBR']) **그 지표에 걸린 단정만** 센다. 판정 기준:
+      - 근처에 그 지표 이름이 있으면      -> 그 지표의 단정
+      - 근처에 다른(유효한) 지표만 있으면 -> 무관 (세지 않는다)
+      - 근처에 어떤 지표도 없으면         -> 막연한 단정이라 보수적으로 센다
     """
     text = text or ''
+    others = [m for m in _ALL_METRICS if not metrics or m not in metrics]
     claimed = []
     for w in BAND_CLAIM_WORDS:
         spots, asserted = 0, 0
@@ -54,9 +88,22 @@ def band_claims_in(text):
             i = text.find(w, start)
             if i < 0:
                 break
+            # "2025년 평균" 안의 "5년 평균" 처럼 연도 표기가 걸리는 것을 막는다.
+            # 산업 통계 인용("2024년 평균 3.5회 -> 2025년 평균 5.4회")이 밴드
+            # 단정으로 잡히던 실측 사고.
+            # (숫자로 시작하는 표현에만 적용한다. "+1.9σ" 처럼 앞이 숫자인 것이
+            #  정상인 표현까지 걸러내면 게이트가 죽는다.)
+            if w[0].isdigit() and i > 0 and text[i - 1].isdigit():
+                start = i + len(w)
+                continue
             spots += 1
             near = text[max(0, i - _DISCLAIMER_WINDOW): i + len(w) + _DISCLAIMER_WINDOW]
-            if not any(dc in near for dc in BAND_DISCLAIMERS):
+            hit = not any(dc in near for dc in BAND_DISCLAIMERS)
+            if hit and metrics:
+                mnear = text[max(0, i - _METRIC_WINDOW): i + len(w) + _METRIC_WINDOW]
+                if not any(m in mnear for m in metrics) and any(m in mnear for m in others):
+                    hit = False      # 유효한 다른 지표를 말하고 있다
+            if hit:
                 asserted += 1
             start = i + len(w)
         if spots and asserted:
@@ -75,9 +122,14 @@ def band_gate(band, text):
     if band.get('per_band_valid') is None and band.get('pbr_band_valid') is None:
         return 'SKIP', '구버전 _per_band.json (scripts/fdr_band.py 재실행 권장)'
 
-    claimed = band_claims_in(text)
     invalid = [lab for lab, key in (('PER', 'per_band_valid'), ('PBR', 'pbr_band_valid'))
                if band.get(key) is False]
+    # 무효 지표의 이름이 밴드 표현 근처에 있을 때만 단정으로 센다.
+    # PBR 밴드가 무효라고 해서 "5년 평균 후행 PER" 서술까지 막으면 KR 종목
+    # 대부분에서 거짓 FAIL 이 난다(PBR 표본이 얇은 경우가 흔하다).
+    # 거짓 FAIL 이 반복되면 게이트를 무시하게 되고 진짜 FAIL 도 함께 묻힌다.
+    # 단, 지표를 아예 밝히지 않은 막연한 단정은 보수적으로 잡는다.
+    claimed = band_claims_in(text, metrics=invalid)
     if claimed and invalid:
         why = '; '.join(band.get('warnings', [])[:2])
         return 'FAIL', (
@@ -782,6 +834,16 @@ def main(stock_name):
     band23 = load_or_none(f'data/{stock_name}/_per_band.json')
     text_concat = ' '.join(v for v in sections.values() if isinstance(v, str))
     b23_status, b23_detail = band_gate(band23, text_concat)
+
+    # B24: opinion 3-시나리오 목표가가 본문에 있는가 (커버 <-> 본문 갈림 차단)
+    _b24_missing = check_b24_targets_in_body(d.get('opinion') or {},
+                                             d.get('sections') or {})
+    if _b24_missing:
+        results.append(('B24 목표가 본문 일치', 'FAIL',
+                        f"본문에 없는 목표가: {', '.join(_b24_missing)} -- "
+                        f"opinion 만 고치고 본문을 안 고친 상태"))
+    else:
+        results.append(('B24 목표가 본문 일치', 'PASS', '3-시나리오 전부 본문에 등장'))
     if b23_status == 'FAIL':
         fail += 1
     results.append(('B23 밴드 유효성', b23_status, b23_detail[:250]))

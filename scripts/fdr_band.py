@@ -189,6 +189,22 @@ def build_series(closes, fin, ref_shares=None):
             'detail': detail, 'notes': notes, 'skipped': skipped}
 
 
+
+def band_valid_for_current(valid, current):
+    """현재 배수가 음수/0 이면 밴드를 무효로 내린다.
+
+    실측(삼성SDI 2026-09-08): 5Y PER mean=22.43 std=5.20 인데 현재가 -63.66 이라
+    z=-16.57σ 가 나왔고 valid=True 였다. 적자 기업은 배수 자체가 성립하지 않으므로
+    "역사적 저평가" 로 읽히면 안 된다. 표본 수와 변동계수만 보고 **현재값의 부호를
+    보지 않은** 것이 원인이다. 2차전지 4사 중 2사가 적자라 섹터 전체에 걸린다.
+    """
+    if not valid:
+        return False
+    if current is None:
+        return False
+    return current > 0
+
+
 def band_stats(series, label):
     """(mean, std, valid, notes). 표본 부족/변동계수 초과면 valid=False.
 
@@ -270,8 +286,13 @@ def main(stock_name, stock_code):
         'skipped_years': built['skipped'],
         'ref_shares': round(ref_shares) if ref_shares else None,
         'detail': built['detail'],
-        'per_band_valid': per_valid, 'pbr_band_valid': pbr_valid,
-        'warnings': warnings,
+        'per_band_valid': band_valid_for_current(per_valid, current_per),
+        'pbr_band_valid': band_valid_for_current(pbr_valid, current_pbr),
+        'warnings': warnings + ([
+            'PER 현재값이 음수(적자) - 밴드/z-score 해석 불가. "역사적 저평가" 표현 금지.'
+        ] if (current_per is not None and current_per <= 0) else []) + ([
+            'PBR 현재값이 음수 - 밴드/z-score 해석 불가.'
+        ] if (current_pbr is not None and current_pbr <= 0) else []),
     }
     os.makedirs(f'data/{stock_name}', exist_ok=True)
     path = f'data/{stock_name}/_per_band.json'

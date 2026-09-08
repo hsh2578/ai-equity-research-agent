@@ -5,7 +5,7 @@ STEP 2.3: Peer 시총/PER/PBR KIS API 실시간 일괄 조회
     python scripts/peer_snapshot.py {종목명} [업종키] [name:code ...]
     python scripts/peer_snapshot.py {종목명} --peers "고려아연:010130,LS:006260"
 
-업종키: kpop, auto, semicon, battery, shipbuild, finance, pharma, retail, it, air, default
+업종키: kpop, auto, semicon, battery, shipbuild, defense, finance, pharma, retail, it, air, default
 
 v5.7 CLI 가드
 -------------
@@ -41,6 +41,8 @@ PEER_TEMPLATES = {
     'retail': {'이마트': '139480', '롯데쇼핑': '023530', '신세계': '004170', 'BGF리테일': '282330'},
     'air': {'대한항공': '003490', '아시아나항공': '020560', '제주항공': '089590', '티웨이항공': '091810'},
     'it': {'네이버': '035420', '카카오': '035720', '크래프톤': '259960'},
+    'defense': {'한국항공우주': '047810', 'LIG넥스원': '079550',
+                '현대로템': '064350', '한화시스템': '272210'},
     'default': {},
 }
 

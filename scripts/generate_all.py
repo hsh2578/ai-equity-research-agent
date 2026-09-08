@@ -2605,7 +2605,33 @@ _DETAILED_V3_CSS = r"""
   */
   .content-flow {}
 
-  .section-block {
+  .margin-note {
+    display: block;
+    margin: 1.5mm 0 3mm 0;
+    padding: 1.2mm 0 1.2mm 3mm;
+    border-left: 3px solid #b8922e;
+    background: #fbf8f0;
+    font-family: var(--font-body);
+    font-size: 8.5pt;
+    font-weight: 700;
+    color: #0b2545;
+    line-height: 1.4;
+}
+.report-chart {
+    margin: 4mm 0 5mm 0;
+    break-inside: avoid;
+    page-break-inside: avoid;
+    text-align: center;
+}
+.report-chart img { width: 100%; max-width: 158mm; height: auto; display: block; margin: 0 auto; }
+.report-chart figcaption {
+    font-family: var(--font-body);
+    font-size: 8pt; font-weight: 600; color: #0b2545;
+    text-align: left; margin-top: 1.5mm; padding-left: 2mm;
+    border-left: 2px solid #b8922e;
+}
+.report-chart .chart-source { font-size: 6.8pt; color: #7a8494; text-align: right; margin-top: 0.8mm; }
+.section-block {
     /* v5.4 -- 12섹션 깊은 분량 (섹션당 3,000~5,500자) 대응:
        각 섹션 새 페이지 시작 + 표/박스 분할 보호 */
     page-break-before: always;
@@ -3330,10 +3356,51 @@ def _detect_version(sections: dict) -> str:
     return "v4"
 
 
+def _apply_section_order(order, sections):
+    """meta.section_order 로 v5 12섹션을 재정렬/축약한다 (위닝펀드 6섹션 구조용).
+
+    2026-09 위닝펀드 수상작 12편 실측: 본문 섹션이 6개뿐이고
+    산업 26% / 기업 19% / 투자포인트 17% / 리스크 10% / 재무 12% / 밸류 16% 다.
+    ESG·실행계획·수급·경영진·컨센은 독립 섹션 없이 호스트 섹션에 녹아 있다.
+
+    섹션을 **지우지 않고** 호스트로 병합한 뒤 렌더 순서만 여기서 지정한다.
+    (지우면 verify_numbers/verify_facts 가 읽던 근거가 사라진다.)
+
+    순서에서 빠진 정규 키에 본문이 남아 있으면 **ValueError 로 죽인다** --
+    그 내용은 에러도 로그도 없이 PDF 에서 사라지기 때문이다.
+    """
+    table = {k: (k, n, en, ko) for k, n, en, ko in _SECTION_TITLES_DETAILED_V5}
+
+    seen = set()
+    for k in order:
+        if k in seen:
+            raise ValueError(f"meta.section_order 에 중복 키: {k}")
+        if k not in table:
+            raise ValueError(
+                f"meta.section_order 의 '{k}' 는 정규 12키가 아니다. "
+                f"alias 키(s08_financial 등)를 넣으면 본문이 두 번 렌더된다. "
+                f"가능한 키: {', '.join(table)}")
+        seen.add(k)
+
+    dropped = [k for k in table if k not in seen and (sections.get(k) or '').strip()]
+    if dropped:
+        raise ValueError(
+            f"meta.section_order 에서 빠졌는데 본문이 남아 있는 섹션: {', '.join(dropped)}. "
+            f"병합했다면 원본을 빈 문자열로 비우고, 아니라면 순서에 넣어라. "
+            f"이대로 두면 해당 내용이 PDF 에 나오지 않는다.")
+
+    return [(k, f"{i:02d}", table[k][2], table[k][3]) for i, k in enumerate(order, start=1)]
+
+
 def _get_section_titles(data) -> list:
-    """v5.0이면 12섹션, v4면 21섹션 목차 반환."""
+    """v5.0이면 12섹션(meta.section_order 로 재편 가능), v4면 21섹션 목차 반환."""
     sections = data.get("sections", {}) if isinstance(data, dict) else {}
-    return _SECTION_TITLES_DETAILED_V5 if _detect_version(sections) == "v5" else _SECTION_TITLES_DETAILED_V4
+    if _detect_version(sections) != "v5":
+        return _SECTION_TITLES_DETAILED_V4
+    order = (data.get("meta") or {}).get("section_order") if isinstance(data, dict) else None
+    if not order:
+        return _SECTION_TITLES_DETAILED_V5
+    return _apply_section_order(list(order), sections)
 
 
 # 하위 호환: 기존 코드가 _SECTION_TITLES_DETAILED 참조 시 v4 사용
@@ -3710,10 +3777,48 @@ def _generate_detailed_v3(data, output_dir):
     # Sections flow continuously after the executive page; chromium decides
     # page breaks automatically based on content height + break-inside hints.
     # =====================================================================
+    # --- 도표 (v5.9): 위닝펀드 수상작은 페이지당 1.0~1.6개를 싣는다. 우리는 0개였다.
+    # wf_charts(13종) / wf_chart_planner 는 이미 있었고 Word 경로에만 연결돼 있었다.
+    _charts, _chart_problems = [], []
+    try:
+        from report_charts import build_charts, inject_tokens, replace_tokens
+        _ap = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'analysis_%s.json' % meta.get('stock_name', ''))
+        if os.path.exists(_ap):
+            _charts, _chart_problems = build_charts(
+                _ap, os.path.join(output_dir, 'charts'),
+                section_order=[k for k, _n, _e, _k2 in _section_titles],
+                sections=sections)
+        else:
+            _chart_problems.append('analysis.json 을 찾지 못했다: %s' % _ap)
+    except Exception as _e:
+        _chart_problems.append('도표 생성 실패: %s: %s' % (type(_e).__name__, _e))
+
+    _by_sec = {}
+    for _c in _charts:
+        _by_sec.setdefault(_c['section_key'], []).append(_c)
+    print('  도표 %d개 삽입' % len(_charts) if _charts else '  [WARN] 도표 0개')
+    for _p in _chart_problems:
+        print('  [WARN] %s' % _p)
+
     section_blocks_html = '<div class="content-flow">\n'
     for idx, (key, num, en, ko) in enumerate(_section_titles, start=1):
         body_md = sections.get(key, "")
+        # v5.11: '> **한 줄:** X' 를 마진 노트로 (인용 박스와 구분한다)
+        if body_md:
+            body_md = re.sub(r'^\s*>\s*\*\*한 줄:\*\*\s*(.+)$',
+                             r'[[MARGIN]]\1[[/MARGIN]]', body_md, flags=re.M)
+        _sec_charts = _by_sec.get(key, [])
+        if _sec_charts:
+            body_md = inject_tokens(body_md, _sec_charts)
         body_html = _md_to_html_blocks(body_md)
+        if _sec_charts:
+            body_html = replace_tokens(body_html, _sec_charts)
+        body_html = re.sub(r'\[\[MARGIN\]\](.*?)\[\[/MARGIN\]\]',
+                           r'<aside class="margin-note">\1</aside>', body_html,
+                           flags=re.S)
+        body_html = re.sub(r'<p>\s*(<aside class="margin-note">.*?</aside>)\s*</p>',
+                           r'\1', body_html, flags=re.S)
         if not body_html:
             body_html = '<p style="color:#9ca6b5;font-style:italic;">— 본 섹션의 콘텐츠가 비어있습니다 —</p>'
 
