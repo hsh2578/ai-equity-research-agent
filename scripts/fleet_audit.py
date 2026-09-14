@@ -31,6 +31,8 @@ if getattr(sys.stdout, 'encoding', '') != 'utf-8':
 # (스크립트, 표시 이름, US 전용 여부)
 CHECKERS = [
     ('section_rubric', '루브릭', None),
+    ('verify_tone', '문체', None),      # v5.21 -- IR협의회 16편 실측 기준
+    ('verify_content', '내용', None),   # v5.21 -- 회사 밖(고객·경쟁·공시)을 다뤘는가
     ('source_coverage', '출처', None),
     ('verify_facts', '팩트', None),
     ('verify_numbers', '수치', 'KR'),

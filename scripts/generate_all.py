@@ -2099,6 +2099,7 @@ def _generate_summary_v2(data, output_dir):
     # ==========================================================================
     html = f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="UTF-8">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/wanteddev/wanted-sans@latest/packages/wanted-sans/fonts/webfonts/variable/complete/WantedSansVariable.min.css">
 <title>{html_lib.escape(meta.get("stock_name",""))} — Equity Research</title>
 <style>{_SUMMARY_V2_CSS}</style>
 </head><body>
@@ -2125,7 +2126,14 @@ def _generate_summary_v2(data, output_dir):
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page()
-            page.goto(file_url)
+            page.goto(file_url, wait_until='networkidle')
+            # v5.21: 웹폰트가 도착하기 전에 PDF 를 찍으면 시스템 폰트로
+            # fallback 된다(Wanted Sans 실측). 실패해도 생성은 계속한다.
+            try:
+                page.evaluate('document.fonts.ready')
+                page.wait_for_timeout(600)
+            except Exception as _e:
+                print(f'  [WARN] 웹폰트 대기 실패({type(_e).__name__}) - 기본 폰트로 진행')
             page.pdf(
                 path=pdf_path,
                 format="A4",
@@ -2236,6 +2244,7 @@ def _generate_summary_legacy(data, output_dir):
 
     html = f'''<!DOCTYPE html>
 <html lang="ko"><head><meta charset="UTF-8">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/wanteddev/wanted-sans@latest/packages/wanted-sans/fonts/webfonts/variable/complete/WantedSansVariable.min.css">
 <style>
   @page {{ size: A4; margin: 2cm 2.5cm; }}
   body {{ font-family: 'Malgun Gothic', sans-serif; font-size: 10pt; line-height: 1.6; color: #1a1a1a; }}
@@ -2370,7 +2379,14 @@ def _generate_summary_legacy(data, output_dir):
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page()
-            page.goto(file_url)
+            page.goto(file_url, wait_until='networkidle')
+            # v5.21: 웹폰트가 도착하기 전에 PDF 를 찍으면 시스템 폰트로
+            # fallback 된다(Wanted Sans 실측). 실패해도 생성은 계속한다.
+            try:
+                page.evaluate('document.fonts.ready')
+                page.wait_for_timeout(600)
+            except Exception as _e:
+                print(f'  [WARN] 웹폰트 대기 실패({type(_e).__name__}) - 기본 폰트로 진행')
             page.pdf(path=pdf_path, format="A4",
                      margin={"top":"20mm","bottom":"20mm","left":"25mm","right":"25mm"},
                      print_background=True)
@@ -2544,14 +2560,44 @@ def _md_to_html_blocks(md_text):
 
 
 _ANALYST_CSS = r"""
-/* ===== v5.16 애널리스트 리포트 디자인 (증권사 PDF 50편 실측 기반) =====
-   본문 9.2pt (삼성 7.8 / 하나 9.2 / 교보 9.5 실측 중앙값), 액센트 1색. */
+/* ===== v5.21 KIRS 디자인 (한국IR협의회 기업분석 16편 실측) =====
+   본문 9.0pt(62.2%) · 소제목 10.5pt · 폰트 Wanted Sans
+   색 실측: #000 93.3% / #c00000 2.0% / #595959 1.9% / #bf8f00 1.0% / #00579b 0.8% */
 :root{
-  --ac:#0a56d6; --ac-dk:#083ea0; --ac-lt:#eef2fb;
-  --ink:#14181d; --sub:#5b626b; --line:#dfe3ea; --rail:#eef2f8;
-  --pos:#12694a; --neg:#c0392b;
+  --ac:#00579b; --ac-dk:#003f70; --ac-lt:#eef2f7;
+  --ink:#000000; --sub:#595959; --line:#d8d8d8; --rail:#eef2f7;
+  --pos:#00579b; --neg:#c00000; --gold:#bf8f00;
+  --font-body:'Wanted Sans Variable','Wanted Sans','Pretendard Variable',
+              -apple-system, system-ui,'Malgun Gothic', sans-serif;
 }
-html, body{ font-size:9.2pt !important; line-height:1.62 !important; color:var(--ink); }
+html, body{ font-size:9pt !important; line-height:1.72 !important; color:var(--ink);
+  font-family:var(--font-body) !important; word-break:keep-all; }
+h1,h2,h3,h4,h5,.acover .co,.acover .kind{ font-family:var(--font-body) !important; }
+
+/* ---- 한 줄 인용을 마진노트로: 좌측 2단 (실측: 노트 38mm / 간격 7mm / 본문 130mm) ---- */
+.section-block .section-body{ padding-left:45mm; }
+/* v5.21: 본문 9pt · 검정 (KIRS 실측 9.0pt 62.2% / #000 93.3%).
+   _DETAILED_V3_CSS 가 9.5pt·#2a3342 를 더 구체적인 선택자로 주고 있어 덮는다. */
+.section-block .section-body{ font-size:9pt !important; color:var(--ink) !important; }
+.section-block .section-body p,
+.section-block .section-body ul.md-bullet li,
+.section-block .section-body ol.md-ordered li{
+  font-size:9pt !important; color:var(--ink) !important; line-height:1.72 !important; }
+.section-block .section-body aside.margin-note{
+  float:left !important; width:38mm !important; margin:1mm 7mm 4mm -45mm !important;
+  border:none !important; border-left:none !important; background:none !important;
+  padding:0 !important; border-radius:0 !important; box-shadow:none !important;
+  font-size:9pt !important; line-height:1.5 !important; text-align:left !important;
+  color:var(--ac) !important; font-weight:700 !important; font-style:normal !important;
+}
+.section-block .section-body aside.margin-note:before{ content:none !important; }
+.section-block .section-body aside.margin-note p{ margin:0 !important; }
+/* 마진노트가 없는 인용(마무리 문장)은 본문 폭 안에서 기존대로 그린다 */
+.section-block .section-body blockquote.md-quote{ clear:both; }
+/* 마진노트 다음 문단이 짧으면 다음 노트와 겹친다 -- 소제목에서 흐름을 끊는다 */
+.section-block .section-body h4{ clear:both; }
+/* 표·도표는 본문 폭 전체를 쓴다 */
+.section-block .section-body table{ clear:both; }
 /* 문단 끝 한두 줄만 넘어가 거의 빈 페이지가 생기는 것을 막는다
    (BE v1 실측: 8페이지에 18자만 남았다). _DETAILED_V3_CSS 의 2 로는 부족했다. */
 p, li{ orphans:3 !important; widows:3 !important; }
@@ -2626,6 +2672,12 @@ p, li{ orphans:3 !important; widows:3 !important; }
   margin:5mm 0 2mm; }
 .section-block .section-body p{ text-align:justify; margin:0 0 2.6mm; }
 .section-block .section-body strong{ color:#000; font-weight:700; }
+/* v5.21: 소제목 10.5pt, 좌측 3pt 액센트 바 (KIRS 실측) */
+.section-block .section-body h4{
+  font-size:10.5pt !important; font-weight:800 !important;
+  padding-left:3mm !important; border-left:1mm solid var(--ac) !important;
+  margin:6mm 0 2.5mm !important; line-height:1.3 !important; color:var(--ink) !important;
+}
 .margin-note{ background:var(--ac-lt) !important; border-left:.9mm solid var(--ac) !important;
   color:var(--ac-dk) !important; font-size:8.2pt !important; padding:2mm 3mm !important; }
 table.nyt{ font-size:7.4pt !important; }
@@ -2648,7 +2700,7 @@ _DETAILED_V3_CSS = r"""
   @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css');
 
   :root {
-    --font-body: 'Pretendard Variable', 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, 'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', sans-serif;
+    --font-body: 'Wanted Sans Variable', 'Wanted Sans', 'Pretendard Variable', 'Pretendard', -apple-system, system-ui, 'Malgun Gothic', 'Noto Sans KR', sans-serif;
     --font-heading: Georgia, 'Times New Roman', 'Pretendard Variable', 'Pretendard', serif;
     --font-mono: 'JetBrains Mono', Consolas, 'Courier New', monospace;
   }
@@ -3457,7 +3509,7 @@ def _detect_version(sections: dict) -> str:
     return "v4"
 
 
-def _apply_section_order(order, sections):
+def _apply_section_order(order, sections, titles=None):
     """meta.section_order 로 v5 12섹션을 재정렬/축약한다 (위닝펀드 6섹션 구조용).
 
     2026-09 위닝펀드 수상작 12편 실측: 본문 섹션이 6개뿐이고
@@ -3490,7 +3542,19 @@ def _apply_section_order(order, sections):
             f"병합했다면 원본을 빈 문자열로 비우고, 아니라면 순서에 넣어라. "
             f"이대로 두면 해당 내용이 PDF 에 나오지 않는다.")
 
-    return [(k, f"{i:02d}", table[k][2], table[k][3]) for i, k in enumerate(order, start=1)]
+    # v5.21: meta.section_titles 로 한글 제목만 덮어쓴다 (영문 라벨은 유지).
+    # IR협의회 목차(주요 제품 및 기술력 / 주주구성 및 자회사 / 실적 추이 및 전망)를
+    # 정규 12키에 담으면 제목이 맞지 않기 때문이다. 없으면 기본값 그대로다.
+    ov = titles or {}
+    if not isinstance(ov, dict):
+        raise ValueError('meta.section_titles 는 {키: 한글제목} 매핑이어야 한다')
+    bad = [k for k in ov if k not in table]
+    if bad:
+        raise ValueError(
+            f"meta.section_titles 의 {', '.join(bad)} 는 정규 12키가 아니다. "
+            f"가능한 키: {', '.join(table)}")
+    return [(k, f"{i:02d}", table[k][2], ov.get(k) or table[k][3])
+            for i, k in enumerate(order, start=1)]
 
 
 def _get_section_titles(data) -> list:
@@ -3498,10 +3562,11 @@ def _get_section_titles(data) -> list:
     sections = data.get("sections", {}) if isinstance(data, dict) else {}
     if _detect_version(sections) != "v5":
         return _SECTION_TITLES_DETAILED_V4
-    order = (data.get("meta") or {}).get("section_order") if isinstance(data, dict) else None
+    meta = (data.get("meta") or {}) if isinstance(data, dict) else {}
+    order = meta.get("section_order")
     if not order:
         return _SECTION_TITLES_DETAILED_V5
-    return _apply_section_order(list(order), sections)
+    return _apply_section_order(list(order), sections, meta.get("section_titles"))
 
 
 # 하위 호환: 기존 코드가 _SECTION_TITLES_DETAILED 참조 시 v4 사용
@@ -3846,6 +3911,18 @@ def _generate_detailed_v3(data, output_dir):
 
     toc_items_html = ''
     _section_titles = _get_section_titles(data)
+    # 권장 독서 순서는 섹션 스킴을 알 때만 쓴다. v5.21 10섹션 같은 커스텀
+
+    # 목차에서 v4용 문자열('01 → 09 → 12 → 13')이 그대로 인쇄됐다.
+
+    _READING_ORDER = {12: '01 → 02 → 07 → 08 → 10 → 12',
+
+                      21: '01 → 02 → 09 → 12 → 13'}
+
+    _ro = _READING_ORDER.get(len(_section_titles))
+
+    _toc_reading_order = f' 권장 독서 순서: {_ro}.' if _ro else ''
+
     for idx, (key, num, en, ko) in enumerate(_section_titles, start=1):
         toc_items_html += (
             f'<div class="toc-item">'
@@ -3926,7 +4003,7 @@ def _generate_detailed_v3(data, output_dir):
 
   <div class="section-caption">— TABLE OF CONTENTS —</div>
   <h2 class="section-heading">목차</h2>
-  <div class="section-intro">본 리서치 노트는 {len(_section_titles)}개 섹션으로 구성되며, 각 섹션은 독립적으로 읽을 수 있도록 설계되었다. 권장 독서 순서: {'01 → 02 → 07 → 08 → 10 → 12' if len(_section_titles) == 12 else '01 → 02 → 09 → 12 → 13'}.</div>
+  <div class="section-intro">본 리서치 노트는 {len(_section_titles)}개 섹션으로 구성되며, 각 섹션은 독립적으로 읽을 수 있도록 설계되었다.{_toc_reading_order}</div>
 
   <div class="toc toc-full">{toc_items_html}</div>
 
@@ -3974,6 +4051,10 @@ def _generate_detailed_v3(data, output_dir):
             body_md = re.sub(r'^\s*>\s*\*\*한 줄:\*\*\s*(.+)$',
                              r'[[MARGIN]]\1[[/MARGIN]]', body_md, flags=re.M)
         _sec_charts = _by_sec.get(key, [])
+        # v5.21: 한 줄 인용을 마진노트로 바꾼다. 스킬 표기(`> **한 줄:**`)는
+        # 그대로 두고 렌더에서만 변환하므로 verify_style C25 에는 영향이 없다.
+        body_md = re.sub(r'^\s*>\s*\*\*한 줄:\*\*\s*(.+?)\s*$',
+                         r'[[MARGIN]]\1[[/MARGIN]]', body_md, flags=re.M)
         if _sec_charts:
             body_md = inject_tokens(body_md, _sec_charts)
         body_html = _md_to_html_blocks(body_md)
@@ -4032,6 +4113,7 @@ def _generate_detailed_v3(data, output_dir):
     # =====================================================================
     html = f"""<!DOCTYPE html>
 <html lang="ko"><head><meta charset="UTF-8">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/wanteddev/wanted-sans@latest/packages/wanted-sans/fonts/webfonts/variable/complete/WantedSansVariable.min.css">
 <title>{html_lib.escape(meta.get("stock_name",""))} — Equity Research (Detailed)</title>
 <style>{_DETAILED_V3_CSS}</style>
 <style>{_ANALYST_CSS}</style>
@@ -4055,7 +4137,14 @@ def _generate_detailed_v3(data, output_dir):
         with sync_playwright() as p:
             browser = p.chromium.launch()
             page = browser.new_page()
-            page.goto(file_url)
+            page.goto(file_url, wait_until='networkidle')
+            # v5.21: 웹폰트가 도착하기 전에 PDF 를 찍으면 시스템 폰트로
+            # fallback 된다(Wanted Sans 실측). 실패해도 생성은 계속한다.
+            try:
+                page.evaluate('document.fonts.ready')
+                page.wait_for_timeout(600)
+            except Exception as _e:
+                print(f'  [WARN] 웹폰트 대기 실패({type(_e).__name__}) - 기본 폰트로 진행')
             page.pdf(
                 path=pdf_path,
                 format="A4",
@@ -4225,7 +4314,8 @@ def generate_dashboard(data, output_dir):
         watch_items = '<div class="trust-item trust-yellow">데이터 확인 필요</div>'
 
     html = f'''<!DOCTYPE html>
-<html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<html lang="ko"><head><meta charset="UTF-8">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/wanteddev/wanted-sans@latest/packages/wanted-sans/fonts/webfonts/variable/complete/WantedSansVariable.min.css"><meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{meta["stock_name"]} ({meta["stock_code"]}) - Dashboard</title>
 <style>
   * {{ margin:0; padding:0; box-sizing:border-box; }}

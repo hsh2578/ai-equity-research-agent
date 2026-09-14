@@ -71,6 +71,37 @@ PROBES = [
      r'최대주주|주식의\s*분포',
      r'최대주주|지분\s*\d|유통주식',
      '유통물량은 변동성 서술의 근거다', 'want'),
+
+    # ---- v5.21 (2026-09 에프에스티 실측) ----
+    # 아래 다섯은 전부 **이미 받아 둔 파일 안에** 있었는데 본문이 한 줄도 안 썼다.
+    # 수집이 부족했던 게 아니라 정독이 부족했다. 그래서 검증기로 옮긴다.
+    ('five_pct', '5% 이상 주주',
+     # 실측: 에프에스티 사업보고서에 삼성전자 7.01% 가 있었는데 리포트가 놓쳤다.
+     # 전략적 투자자나 고객사가 주주로 들어와 있으면 사업 구조 서술이 달라진다.
+     r'5%\s*이상\s*주주|주식\s*소유현황',
+     r'5%\s*이상|소액주주|자사주|자기주식|우리사주',
+     '전략적 투자자가 주주면 그 자체가 사업 서술이다', 'must'),
+    ('exec_career', '임원 경력',
+     # 실측: 창업자가 램리서치 한국법인 대표 출신, 임원 중 삼성전자·ASML 근무자.
+     r'임원\s*현황|주요경력',
+     r'경력|출신|역임|재직|대표이사.{0,20}(?:선임|승계|취임)',
+     '창업자·경영진 이력이 그 회사의 출발점을 설명한다', 'want'),
+    ('history', '회사 연혁',
+     r'회사의\s*연혁',
+     r'연혁|설립|창업|상장',
+     '기술 축적 기간은 진입장벽 주장의 근거다', 'want'),
+    ('treasury', '자기주식 처분·소각',
+     # _dart_filings.json 에서 온다. 처분목적에 투자 용처가 직접 적혀 있다.
+     # 실측: "처분목적 = EUV펠리클 확장 투자 재원 확보" 인데 리포트는
+     # "설비투자 목적을 공시가 말하지 않는다"고 썼다.
+     r'자기주식\s*처분|주식소각|처분목적|소각할\s*주식',
+     r'자기주식|자사주|소각',
+     '처분 목적이 설비투자 용처를 직접 말해 준다', 'must'),
+    ('earnings_change', '실적변동 공시 사유',
+     # 회사가 증감 사유를 직접 적는 유일한 공시다.
+     r'매출액\s*또는\s*손익구조|변동\s*주요원인',
+     r'회사는.{0,40}(?:밝|설명|적)|공시.{0,20}사유|변동\s*사유|증가사유|적자전환사유',
+     '회사가 스스로 밝힌 증감 사유는 추측을 대체한다', 'must'),
 ]
 
 
@@ -84,6 +115,17 @@ def load_source_text(stock_name):
                 parts.append(open(p, encoding='utf-8').read())
             except OSError:
                 pass
+    # v5.21: 수시공시 본문도 1차 출처다. 정기보고서는 '무엇을 했는가'를,
+    # 수시공시는 '왜 했는가'를 말한다 (collect_dart_filings.py).
+    fp = os.path.join(base, '_dart_filings.json')
+    if os.path.exists(fp):
+        try:
+            d = json.load(open(fp, encoding='utf-8'))
+            for b in d.get('bodies', []):
+                parts.append(b.get('text') or '')
+            parts.append('\n'.join(x.get('name', '') for x in d.get('list', [])))
+        except (OSError, ValueError):
+            pass
     return '\n'.join(parts)
 
 
@@ -124,7 +166,7 @@ def main(stock_name):
         return 0
 
     print('=' * 70)
-    print(f'  source_coverage (v5.14): {stock_name}')
+    print(f'  source_coverage (v5.21): {stock_name}')
     print(f'  1차 출처 {len(src):,}자 / 본문 {len(body):,}자')
     print('=' * 70)
     rows = check(src, body)

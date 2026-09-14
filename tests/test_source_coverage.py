@@ -95,6 +95,28 @@ eq(status_of(check('평균가동률 96.4', '본문'), 'utilization'), 'WARN',
 eq(status_of(check('연결조정 (1,047,792)', '본문'), 'segment'), 'FAIL',
    "must 등급은 FAIL")
 
+# ---------- v5.21 프로브 (2026-09 에프에스티 실측) ----------
+# 셋 다 "이미 받아 둔 파일 안에 있었는데 본문이 안 쓴 것" 이다.
+eq(status_of(check('5% 이상 주주  삼성전자(주) 1,538,204  7.01', '본문'), 'five_pct'), 'FAIL',
+   "**5% 이상 주주 표를 안 쓰면 FAIL -- 삼성전자 7.01% 를 놓쳤던 자리**")
+eq(status_of(check('5% 이상 주주  삼성전자(주) 7.01', '자사주 9.9% 를 제외한 유통주식'), 'five_pct'),
+   'PASS', "본문이 자사주/소액주주를 언급하면 통과")
+
+eq(status_of(check('자기주식 처분 결정  처분목적 EUV 투자 재원', '본문'), 'treasury'), 'FAIL',
+   "**자기주식 처분목적을 안 쓰면 FAIL -- 설비투자 용처가 여기 적혀 있다**")
+eq(status_of(check('주식소각 결정  소각할 주식 510,000', '자사주 51만주를 소각했다'), 'treasury'),
+   'PASS', "소각을 본문이 쓰면 통과")
+
+eq(status_of(check('매출액 또는 손익구조 30% 이상 변동  변동 주요원인', '본문'), 'earnings_change'),
+   'FAIL', "**회사가 밝힌 증감 사유를 안 쓰면 FAIL**")
+eq(status_of(check('변동 주요원인', '적자전환사유는 연구개발비 증가였다'), 'earnings_change'),
+   'PASS', "사유를 인용하면 통과")
+
+# want 등급 두 개는 WARN 이어야 한다 (업종에 따라 무의미할 수 있다)
+eq(status_of(check('임원 현황  주요경력', '본문'), 'exec_career'), 'WARN',
+   "임원 경력은 want 등급")
+eq(status_of(check('회사의 연혁', '본문'), 'history'), 'WARN', "연혁도 want 등급")
+
 # ---------- 입력 방어 ----------
 eq([r[2] for r in check('', '')].count('SKIP'), len(PROBES), "빈 입력은 전부 SKIP")
 eq([r[2] for r in check(None, None)].count('SKIP'), len(PROBES), "None 도 안전")

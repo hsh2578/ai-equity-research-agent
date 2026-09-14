@@ -264,6 +264,12 @@ _ALIAS = {'s01_opinion_thesis': 's01_opinion',
 
 STORY_CANON = ('s02_thesis_catalysts', 's03_company_overview', 's04_industry_competition')
 
+# v5.21: IR협의회 기업분석 목차는 회사 이야기를 세 장으로 나눈다 --
+# 기업개요 / 주주구성·자회사(s11) / 주요 제품 및 기술력(s05).
+# 뒤 둘도 사업 서술이므로 스토리로 센다. 이 둘이 독립 섹션으로 쓰인
+# 리포트에서만 더해지고(빈 문자열이면 0), 기존 6섹션 구조는 영향이 없다.
+STORY_CANON_EXT = ('s05_management_fieldcheck', 's11_supply_shareholder')
+
 # 구 이름 (외부 참조 호환)
 STORY_KEYS = ('s02_investment_points', 's03_company_overview', 's04_industry')
 FINANCE_KEYS = ('s08_financial', 's09_valuation')
@@ -317,7 +323,7 @@ def table_ratio(text):
     return tbl / total * 100
 
 
-def check_c21_story_weight(sections):
+def check_c21_story_weight(sections, meta=None):
     """C21: **본문 전체 대비** 스토리(투자포인트+기업+산업) 비중(%).
 
     반환: (비중%, 통과여부). 본문이 없으면 (None, None).
@@ -355,6 +361,13 @@ def check_c21_story_weight(sections):
         return None, None
 
     story = sum(len(section_text(sections, k)) for k in STORY_CANON)
+    # v5.21: IR협의회 목차를 쓴 리포트에서만 s05/s11 을 스토리로 센다.
+    # 같은 키가 구 12섹션에서는 '경영진·현장검증' / '수급·주주환원' 이라
+    # 사업 서술이 아니다. meta.section_titles 로 제목을 재정의한 경우에만
+    # 목차 교체를 선언한 것으로 본다(와이지엔터 픽스처 실측으로 확인).
+    retitled = set((meta or {}).get('section_titles') or {})
+    story += sum(len(section_text(sections, k)) for k in STORY_CANON_EXT
+                 if k in retitled)
     share = story / total * 100
     return share, share >= STORY_SHARE_MIN
 
@@ -787,7 +800,7 @@ def main(stock_name):
         print(f"  [✓ C20] 클리셰                   {cliche_count}건")
 
     # ----- C21. 스토리텔링 비중 -----
-    _share, _ok = check_c21_story_weight(sections)
+    _share, _ok = check_c21_story_weight(sections, d.get('meta'))
     if _share is None:
         print("  [- C21] 스토리 비중              판정 불가 -- "
               "정규 12키 밖 본문이 10% 초과(구 v4 스킴). "
