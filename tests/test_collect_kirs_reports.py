@@ -51,6 +51,62 @@ eq(ck._age_months('언제인지 모름', TODAY), None, '파싱 실패는 None')
 # 해가 바뀌는 경계
 eq(ck._age_months('2025.12.31', dt.date(2026, 1, 1)), 1, '연말/연초 경계')
 
+# ---------- 목록 파싱: 종목명 키는 itemName 이다 ----------
+# stockName 을 읽으면 에러 없이 빈 문자열이 되어 자체 리포트를 이름으로 못 찾고
+# 파일명이 '_{rid}.pdf' 가 되며 --keyword 가 제목에만 걸린다 (에프에스티 실측).
+class _ListResp:
+    status_code = 200
+
+    def __init__(self, payload):
+        self._p = payload
+
+    def json(self):
+        return self._p
+
+    def raise_for_status(self):
+        pass
+
+
+class _ListSession:
+    def __init__(self, pages):
+        self._pages, self.n = pages, 0
+        self.headers = {}
+
+    def update(self, *a, **k):
+        pass
+
+    def get(self, url, **kw):
+        self.n += 1
+        return _ListResp(self._pages[self.n - 1] if self.n <= len(self._pages) else [])
+
+
+def fetch(pages):
+    orig = ck.requests.Session
+    ck.requests.Session = lambda: _ListSession(pages)
+    try:
+        return ck.fetch_list(pages=len(pages), delay=0)
+    finally:
+        ck.requests.Session = orig
+
+
+ROW = {'researchCategory': '종목분석', 'itemCode': '036810', 'itemName': '에프에스티',
+       'researchId': 95000, 'title': '펠리클의 다음 장', 'brokerName': '한국IR협의회',
+       'writeDate': '2026-07-28'}
+got = fetch([[ROW]])
+eq(len(got), 1, '목록 1건을 읽는다')
+eq(got[0]['name'], '에프에스티', '**종목명은 itemName 에서 온다** (stockName 이 아니다)')
+eq(got[0]['code'], '036810', '종목코드는 itemCode')
+eq(got[0]['date'], '2026-07-28', '발간일은 writeDate')
+
+# 다른 증권사 / [AI] 요약본은 걸러낸다
+eq(len(fetch([[dict(ROW, brokerName='신한투자증권')]])), 0, '다른 증권사는 제외')
+eq(len(fetch([[dict(ROW, title='[AI] 세 줄 요약')]])), 0, '[AI] 단문 요약본은 제외')
+
+# 같은 researchId 가 페이지 경계에서 중복돼도 한 번만
+eq(len(fetch([[ROW], [ROW]])), 1, '중복 researchId 는 한 번만 담는다')
+# 빈 페이지를 만나면 멈춘다
+eq(len(fetch([[ROW], [], [dict(ROW, researchId=95001)]])), 1, '빈 페이지에서 순회를 멈춘다')
+
 # ---------- 상수 ----------
 eq(ck.BROKER, '한국IR협의회', '증권사명은 정확히 일치로 거른다 (부분일치면 유사기관이 섞인다)')
 eq(ck.LIST_URL.startswith('https://m.stock.naver.com'), True,

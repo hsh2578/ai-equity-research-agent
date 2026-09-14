@@ -81,9 +81,14 @@ def fetch_list(pages=40, delay=0.15):
             if rid in seen:
                 continue
             seen.add(rid)
-            out.append({'rid': rid, 'name': (it.get('stockName') or '').strip(),
+            # 종목명 키는 itemName 이다. stockName 을 읽으면 조용히 빈 문자열이
+            # 되어 (a) 이름으로 자체 리포트를 못 찾고 (b) 파일명이 '_{rid}.pdf'
+            # 가 되며 (c) --keyword 가 제목에만 걸린다. 에프에스티 재작성에서
+            # 네 편을 받고서야 드러났다 -- 세 증상 모두 에러가 아니라 침묵이다.
+            out.append({'rid': rid,
+                        'name': (it.get('itemName') or it.get('stockName') or '').strip(),
                         'code': it.get('itemCode'), 'title': title,
-                        'date': it.get('date') or it.get('writeDate')})
+                        'date': it.get('writeDate') or it.get('date')})
         time.sleep(delay)
     return out
 
