@@ -199,6 +199,14 @@ _SENT_CLOSERS = '*`)]"' + "'" + '\u201d\u2019'
 _SENT_SPLIT = re.compile('[.!?][' + re.escape(_SENT_CLOSERS) + ']*\\s+|\\n+')
 
 
+# (v5.22) 한국IR협의회 기업분석 19편을 같은 분할기로 재서 잡은 밴드.
+#   평균 문장 길이 65~96자(중앙값 80) / 100자+ 비율 8.2~41.2%
+# 하한은 19편 중 가장 짧은 리포트(메카로 65자)에 맞춘다 -- 그보다 짧으면
+# 정답지 어디에도 없는 호흡이라는 뜻이다.
+C9_AVG_MIN = 65.0
+C9_LONG_MAX = 45.0
+
+
 def split_sentences(text, min_len=20):
     """마크다운 산문을 문장 단위로 자른다.
 
@@ -214,21 +222,68 @@ def split_sentences(text, min_len=20):
     이 게이트의 취지는 영문 직역체(진짜 긴 문장)를 잡는 것이지
     마크다운 구조를 문장으로 세는 것이 아니다.
     """
-    return [x.strip() for x in _SENT_SPLIT.split(text or '') if len(x.strip()) > min_len]
+    return [x.strip() for x in _SENT_SPLIT.split(_unwrap(text)) if len(x.strip()) > min_len]
+
+
+# 마크다운 구조가 시작되는 줄 (여기서는 잇지 않는다)
+_BLOCK_START = re.compile(
+    r'\s*(#{1,6}\s|[-*+]\s|\d+[.)]\s|>|\||```|\*\*|출처[:：]|자료[:：])')
+
+
+def _unwrap(text):
+    """(v5.22) 문단 안의 물리적 줄바꿈을 잇는다.
+
+    `_SENT_SPLIT` 이 개행을 경계로 쓰는데, 우리 본문은 빌더에서 40~50자
+    폭으로 하드랩돼 있다. 그래서 **줄 길이를 문장 길이로 세고 있었다** --
+    전 종목 평균이 35~65자로 나온 것은 서술이 짧아서가 아니라 계측 때문이다.
+
+    이어 붙이는 조건: 앞 줄이 문장부호로 끝나지 않고, 앞뒤 줄 모두 헤딩·
+    리스트·인용·표·코드로 시작하지 않을 때.
+    """
+    if not text:
+        return ''
+    out = []
+    for raw in text.split('\n'):
+        line = raw.rstrip()
+        if (out and out[-1] and line.strip()
+                and not re.search(r'[.!?:;][*`)\]"”’]*$', out[-1])
+                and not _BLOCK_START.match(line)
+                and not _BLOCK_START.match(out[-1])):
+            out[-1] = out[-1] + ' ' + line.strip()
+        else:
+            out.append(line)
+    return '\n'.join(out)
 
 
 def check_c9_long_sentence(text):
-    """C9 (v4.16): 한 문장 100자+ 비율 (영문 직역체 신호)
-    - 자연 한국어는 50자 이내 호흡
+    """C9 (v5.22 재정의): 문장 길이는 상한이 아니라 **밴드**다.
+
+    v4.16 은 100자 넘는 문장을 '영문 직역체 신호'로 보고 25% 상한을 걸었다.
+    그런데 한국IR협의회 기업분석 19편을 같은 분할기로 재 보니 100자+ 비율이
+    8.2~41.2% 이고 평균 문장 길이가 65~96자다. **그 기준으로는 정답지 절반이
+    떨어진다.**
+
+    우리 44편 실측은 평균 43~73자였다. 같은 분량을 더 많은 문장으로 쪼갠
+    것인데, 쪼개면 설명이 사라진다 -- "A다. 그래서 B다" 는 사실 두 개이고
+    "A이기 때문에 B다" 는 설명 하나다. 인과·비교 연결어 밀도는 양쪽이
+    비슷했고(IR 13~33% / 우리 21~36%), 갈린 것은 길이뿐이었다.
+
+    더 결정적인 것은 **C9 상한이 잡으려던 바로 그 두 리포트(NFLX 71자 /
+    PANW 73자)가 우리 중 가장 길다**는 사실이다. 직역체의 증상은 길이가
+    아니라 구조(C8 영문 표기·C7 라벨형 소제목)였고, 길이는 잘못된 대리
+    지표였다. 상한은 45% 로 완화하고 **평균 65자 하한**을 새로 건다.
+
+    반환: (평균 문장 길이, 100자+ 비율, 100자+ 개수)
     """
     # 표/코드 제거
     prose = re.sub(r'\|.*?\|', '', text)
     prose = re.sub(r'```[\s\S]*?```', '', prose)
     sentences = split_sentences(prose)
     if not sentences:
-        return 0, 0
+        return 0, 0, 0
     long_sentences = [x for x in sentences if len(x) > 100]
-    return len(long_sentences) / len(sentences) * 100, len(long_sentences)
+    avg = sum(len(x) for x in sentences) / len(sentences)
+    return avg, len(long_sentences) / len(sentences) * 100, len(long_sentences)
 
 
 
@@ -635,14 +690,20 @@ def main(stock_name):
             fail += 1
         print(f"  [{icon} C8] {key:26} 영문 직역 표기 {en_count}개  {en_examples[:3] if en_examples else ''} {'← 한글 표기 권장 (X억 달러 등)' if not ok else ''}")
 
-        # C9: 한 문장 100자+ 비율 (영문 직역체 신호)
-        long_pct, long_count = check_c9_long_sentence(text)
+        # C9 (v5.22): 문장 길이 밴드 -- 평균 70자 이상, 100자+ 45% 이하
+        avg_len, long_pct, long_count = check_c9_long_sentence(text)
         total_checks += 1
-        ok = long_pct < 25  # 25% 이상 긴 문장이면 호흡 부족
+        ok = avg_len >= C9_AVG_MIN and long_pct <= C9_LONG_MAX
         icon = '✓' if ok else '✗'
         if not ok:
             fail += 1
-        print(f"  [{icon} C9] {key:26} 100자+ 문장 {long_pct:.0f}% ({long_count}개)  {'← 50자 이내 호흡 권장' if not ok else ''}")
+        if avg_len < C9_AVG_MIN:
+            hint = f'← 평균 {C9_AVG_MIN}자 이상 (문장을 잇는다. IR협의회 19편 실측 65~96자)'
+        elif long_pct > C9_LONG_MAX:
+            hint = f'← 100자+ 가 {C9_LONG_MAX}% 를 넘는다 (직역체 의심)'
+        else:
+            hint = ''
+        print(f"  [{icon} C9] {key:26} 평균 {avg_len:.0f}자 / 100자+ {long_pct:.0f}% ({long_count}개)  {hint}")
 
         # C10: 위트성 인용 박스 (s01/s13/s14 권장)
         if key in WITTY_QUOTE_RECOMMENDED:

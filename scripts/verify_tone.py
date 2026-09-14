@@ -31,6 +31,9 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # --- IR협의회 16편 실측에서 나온 상수 ---
 BOLD_RATIO_MAX = 12.0      # 실측 6.4~9.0%. 12% 를 넘으면 강조가 아니라 습관이다
+BOLD_RATIO_MIN = 3.0       # (v5.22) 하한. 상한만 두었더니 19.0% -> 0.34% 로 갔다.
+                           # fitz span 실측 IR협의회 9.4~15.8%. 강조가 없으면
+                           # 어디를 읽을지 모른다 -- 가독성이 떨어진 직접 원인이다
 LONG_BOLD_MAX = 12         # 26자 이상 볼드 개수 (문장 통째 강조)
 CONTRAST_MAX = 0.35        # "A가 아니라 B" /1,000자. 실측 0.00
 META_MAX = 3               # "이 리포트/본 리서치/중심 질문" 등 자의식 표현
@@ -82,9 +85,13 @@ def check(sections, order):
     """반환: [(코드, 라벨, 상태, 실측, 기준, 왜)]"""
     m = measure(sections, order)
     rows = [
-        ('T1', '본문 볼드 비율', m['bold_ratio'] <= BOLD_RATIO_MAX,
-         f"{m['bold_ratio']:.1f}%", f"<= {BOLD_RATIO_MAX}%",
-         'IR협의회 실측 6.4~9.0%. 강조가 많으면 강조가 아니다'),
+        # 하한은 본문이 1,000자는 돼야 적용한다. 짧은 조각에서 밀도를 따지면
+        # 픽스처·부분 섹션이 전부 FAIL 이 나고, 그러면 게이트를 무시하게 된다.
+        ('T1', '본문 볼드 비율',
+         (m['bold_ratio'] <= BOLD_RATIO_MAX
+          and (m['chars'] < 1000 or m['bold_ratio'] >= BOLD_RATIO_MIN)),
+         f"{m['bold_ratio']:.1f}%", f"{BOLD_RATIO_MIN}~{BOLD_RATIO_MAX}%",
+         'IR협의회 실측 6.4~15.8%. 많으면 습관이고 없으면 길잡이가 없다'),
         ('T2', '문장 통째 볼드(26자+)', m['long_bold'] <= LONG_BOLD_MAX,
          f"{m['long_bold']}개", f"<= {LONG_BOLD_MAX}개",
          '문장 전체 강조는 IR협의회 본문에 없다'),

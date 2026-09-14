@@ -58,8 +58,12 @@ def close(actual, expected, name, tol=0.5):
 # --- 기본 분리 ---
 eq(len(split_sentences('첫 문장이다. 두 번째 문장이다. 세 번째 문장이다.', min_len=0)), 3,
    "마침표 + 공백으로 분리")
-eq(len(split_sentences('첫 줄이다\n둘째 줄이다\n셋째 줄이다', min_len=0)), 3,
-   "**줄바꿈으로도 분리한다** (마크다운 리스트/헤딩)")
+# v5.22: 줄바꿈은 **마크다운 구조 줄에서만** 경계다.
+# 문장부호 없이 끊긴 줄은 하드랩이므로 이어 붙인다 (아래 _unwrap 절 참조).
+eq(len(split_sentences('- 첫 줄이다\n- 둘째 줄이다\n- 셋째 줄이다', min_len=0)), 3,
+   "**리스트/헤딩 줄은 줄바꿈으로 분리한다**")
+eq(len(split_sentences('첫 줄이다\n둘째 줄이다\n셋째 줄이다', min_len=0)), 1,
+   "**하드랩된 산문은 잇는다** (v4.16 은 줄 길이를 문장 길이로 셌다)")
 
 # --- 닫는 마크업 뒤 마침표 ---
 eq(len(split_sentences('**강조된 문장이다.** 이어지는 문장이다.', min_len=0)), 2,
@@ -92,7 +96,7 @@ eq(len(parts) >= 4, True, "헤딩/출처줄/본문이 각각 분리된다")
 eq(all(len(p) <= 100 for p in parts), True, "마크다운 블록도 전부 100자 이하로 쪼개진다")
 
 # --- C9 종합: 마크다운 구조가 100자+ 로 오판되지 않는다 ---
-pct, cnt = check_c9_long_sentence(md)
+_avg, pct, cnt = check_c9_long_sentence(md)
 eq(cnt, 0, "마크다운 블록에서 100자+ 문장 0개")
 
 # --- 진짜 긴 문장은 여전히 잡는다 (게이트가 무력화되면 안 된다) ---
@@ -100,17 +104,33 @@ long_one = ('이 회사는 반도체 소재를 만들며 최근 몇 년간 지�
             '동시에 영업이익률 또한 개선되는 흐름을 보이면서 시장의 기대를 모으고 있는데 '
             '다만 경쟁 심화와 원가 상승이라는 구조적 부담도 함께 안고 있는 상황이다.')
 eq(len(long_one) > 100, True, "(전제) 테스트 문장이 100자를 넘는다")
-pct2, cnt2 = check_c9_long_sentence(long_one)
+_a2, pct2, cnt2 = check_c9_long_sentence(long_one)
 eq(cnt2, 1, "**진짜 긴 문장은 여전히 잡는다**")
 
 # 표/코드는 계측에서 제외된다 (기존 동작 유지)
 tbl = '| 항목 | 값 |\n|---|---|\n| 매출 | 5,454억 |\n짧은 문장이다.'
-pct3, cnt3 = check_c9_long_sentence(tbl)
+_a3, pct3, cnt3 = check_c9_long_sentence(tbl)
 eq(cnt3, 0, "표 행은 문장으로 세지 않는다")
 
 # 빈 입력
-eq(check_c9_long_sentence(''), (0, 0), "빈 문자열은 (0, 0)")
-eq(check_c9_long_sentence('짧다.'), (0, 0), "20자 이하만 있으면 (0, 0)")
+eq(check_c9_long_sentence(''), (0, 0, 0), "빈 문자열은 (0, 0, 0)")
+eq(check_c9_long_sentence('짧다.'), (0, 0, 0), "20자 이하만 있으면 (0, 0, 0)")
+
+# --- v5.22: 하드랩된 문단은 이어 붙인 뒤 센다 ---
+# 빌더가 40~50자 폭으로 줄바꿈하기 때문에, 잇지 않으면 줄 길이를 문장
+# 길이로 세게 된다 (전 종목 평균이 35자로 나왔던 원인).
+wrapped = ('동사의 식자재유통 영업이익률이 2023년 2.8%에서\n'
+           '2026년 상반기 1.38%로 내려온 것은 외형을 키우는\n'
+           '과정에서 저마진 거래처가 늘었기 때문이다.')
+avg_w, _pw, _cw = check_c9_long_sentence(wrapped)
+eq(avg_w > 60, True, "**하드랩 문단을 이어 붙여야 문장 길이가 제대로 나온다**")
+eq(len(split_sentences(wrapped)), 1, "문단 안 줄바꿈은 문장 경계가 아니다")
+
+# 헤딩·리스트·인용은 계속 각각의 단위로 남는다
+struct = ('#### 소제목이며 스무 자를 넘기게 쓴 것이다\n'
+          '- 첫째 항목이며 충분히 길게 풀어 쓴 문장이다\n'
+          '- 둘째 항목이며 역시 충분히 길게 풀어 쓴 문장이다')
+eq(len(split_sentences(struct)), 3, "헤딩/리스트는 잇지 않는다")
 
 print(f"\n{'=' * 60}")
 print(f"  verify_style C9 문장 분리 테스트: {_passed}개 통과 / {len(_failed)}개 실패")
