@@ -280,9 +280,13 @@ def main(stock_name):
                 s, e = max(0, m.start() - 20), min(len(combined), m.end() + 30)
                 near = combined[s:e]
                 # 숫자 조 찾기
-                nums = re.findall(r'(\d+\.?\d*)\s*조', near)
-                for num in nums:
-                    if abs(float(num) - expected_jo) / expected_jo < 0.1:  # 10% 이내
+                # 억원 표기도 읽는다 -- 시가총액 3천억대 종목에서 '0.3조' 는
+                # 쓰지 않는 표기다(CJ프레시웨이 실측). 조·억 둘 다 허용한다.
+                nums = [(float(v), 1.0) for v in re.findall(r'(\d+\.?\d*)\s*조', near)]
+                nums += [(float(v.replace(',', '')) / 10000, 1.0)
+                         for v in re.findall(r'([\d,]+)\s*억', near)]
+                for num, _w in nums:
+                    if abs(num - expected_jo) / expected_jo < 0.1:  # 10% 이내
                         found_match = True
                         break
                 if found_match:
@@ -307,7 +311,10 @@ def main(stock_name):
                     if orig_ebitda and i < len(row):
                         try:
                             reported_jo = float(str(row[i]).replace(',', ''))
-                            orig_jo = orig_ebitda / 10000
+                            # 행 라벨이 단위를 말한다. '억원' 이면 억으로 비교한다 --
+                            # 조로 고정하면 중소형주가 전부 FAIL 이 난다.
+                            in_uk = '억' in str(row[0]) and '조' not in str(row[0])
+                            orig_jo = orig_ebitda if in_uk else orig_ebitda / 10000
                             if pct_diff(reported_jo, orig_jo) and pct_diff(reported_jo, orig_jo) > 3:
                                 ebitda_mismatch += 1
                         except ValueError:

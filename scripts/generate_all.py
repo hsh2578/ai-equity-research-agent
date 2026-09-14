@@ -2887,6 +2887,9 @@ _DETAILED_V3_CSS = r"""
   p { orphans: 2; widows: 2; margin: 1mm 0; }
   table.nyt { page-break-inside: avoid; break-inside: avoid; max-width: 100%; }
   blockquote.md-quote { page-break-inside: avoid; break-inside: avoid; }
+  /* 마무리 인용이 앞 문단에서 떨어져 혼자 다음 페이지로 가면 빈 페이지가 된다
+     (CJ프레시웨이 실측: 5페이지에 40자만 남았다). 앞 문단과 붙여 둔다. */
+  .section-block .section-body p + blockquote.md-quote { page-break-before: avoid; break-before: avoid; }
 
   /* ---------- Cover absolute children — coordinates inside the 174x269 box ---------- */
   .full-bleed.cover .accent-corner {
@@ -3573,6 +3576,20 @@ def _get_section_titles(data) -> list:
 _SECTION_TITLES_DETAILED = _SECTION_TITLES_DETAILED_V4
 
 
+def _fmt_shares(n):
+    """발행주식수 표기. 1억 주 미만은 만주로 쓴다.
+
+    억 단위로 고정하면 11,871,586 주가 '0.12억주' 가 된다(CJ프레시웨이 실측).
+    증권사 리포트는 그 규모에서 '1,187만주' 로 적는다.
+    """
+    if not n:
+        return None
+    n = float(n)
+    if n >= 1e8:
+        return f'{n / 1e8:.2f}억주'
+    return f'{n / 1e4:,.0f}만주'
+
+
 def _generate_detailed_v3(data, output_dir):
     """Single institutional-grade PDF: cover + TOC + 21 sections + final call.
 
@@ -3791,7 +3808,7 @@ def _generate_detailed_v3(data, output_dir):
         _row("목표주가", f'{fmt_money(opinion.get("target_base"))} {up_base:+.1f}%', True),
         _row("현재주가", fmt_money(cur_price)),
         _row("시가총액", _p.get("market_cap")),
-        _row("발행주식수", f'{_p["shares_outstanding"]/1e8:.2f}억주' if _p.get("shares_outstanding") else None),
+        _row("발행주식수", _fmt_shares(_p.get("shares_outstanding"))),
         _row("52주 최저/최고", f'{_fp(_p.get("low_52w"))} / {_fp(_p.get("high_52w"))}'
              if _p.get("low_52w") and _p.get("high_52w") else None),
     ])
