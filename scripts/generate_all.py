@@ -31,6 +31,42 @@ import html as html_lib
 _QUOTE_BOX_RE = re.compile(
     r'^>\s*\**\s*(?:사업보고서|반기보고서|분기보고서|SEC\s*10-[KQ]|컨퍼런스콜|증권사 리포트)', re.M)
 
+def _match_peer_snapshot(peer, name):
+    """스냅샷에서 이 이름에 맞는 항목을 찾는다 (v5.22).
+
+    `verify_facts._match_peer` 와 같은 규칙이다. 부분문자열 관계인 두 종목
+    (피에스케이 / 피에스케이홀딩스)이 같은 표에 있으면 단순 `in` 매칭은 사전
+    순서에 따라 엉뚱한 쪽에 붙는다. verify_facts 는 v5.18 에 고쳤는데 이 함수는
+    남아 있어서 같은 버그를 두 번 만났다 -- **한 곳을 고쳤으면 같은 패턴이
+    다른 곳에도 있는지 본다.**
+
+    ① 정확 일치 ② 공백·괄호 제거 후 정확 일치 ③ 부분 일치 중 질의가 후보에
+    들어가는 쪽을 먼저, 그다음 이름 길이 차가 가장 작은 것 순으로 본다.
+    """
+    if not name:
+        return None
+    if name in peer:
+        return peer[name]
+
+    def norm(x):
+        return ''.join(x.split()).replace('(', '').replace(')', '')
+
+    n = norm(name)
+    for k, v in peer.items():
+        if norm(k) == n:
+            return v
+    cands = []
+    for k in peer:
+        nk = norm(k)
+        if n in nk:
+            cands.append((0, abs(len(nk) - len(n)), k))
+        elif nk in n:
+            cands.append((1, abs(len(nk) - len(n)), k))
+    if not cands:
+        return None
+    return peer[min(cands)[2]]
+
+
 def parse_market_cap(raw):
     """리포트 표기 시총 문자열 -> 숫자. 파싱 불가면 None.
 
@@ -4684,16 +4720,15 @@ def main():
                 if p.get("highlight"):
                     continue
                 pname = p.get("name", "")
-                snap = None
-                for snap_name, snap_data in peer_snap.items():
-                    # 메타데이터 키(_collected_at 등)는 dict 가 아니다. 여기서 걸러내지 않으면
-                    # 아래에서 snap.get(...) 이 AttributeError 를 내고, 그 예외가 바깥 except 에
-                    # 잡혀 **Peer 검증 전체가 조용히 건너뛰어진다** (v5.5 방어 추가).
-                    if not isinstance(snap_data, dict):
-                        continue
-                    if snap_name.lower().split()[0] in pname.lower() or pname.lower().split()[0] in snap_name.lower():
-                        snap = snap_data
-                        break
+                # 메타데이터 키(_collected_at 등)는 dict 가 아니다. 여기서 걸러내지 않으면
+                # 아래에서 snap.get(...) 이 AttributeError 를 내고, 그 예외가 바깥 except 에
+                # 잡혀 **Peer 검증 전체가 조용히 건너뛰어진다** (v5.5 방어 추가).
+                cand = {k: v for k, v in peer_snap.items() if isinstance(v, dict)}
+                # (v5.22) 부분문자열 매칭은 '피에스케이' 를 '피에스케이홀딩스' 에 붙인다.
+                # verify_facts 는 v5.18 에 고쳤는데 여기는 남아 있었다 -- 같은 버그가
+                # 두 곳에 있었고 한쪽만 고쳤던 것이다(피에스케이홀딩스 실측: Peer PER
+                # 46.28 을 본 종목 34.45 와 비교해 "34% 불일치" 거짓 경고).
+                snap = _match_peer_snapshot(cand, pname)
                 if not snap:
                     warnings.append(f"Peer '{pname}'이 _peer_snapshot.json에 없음. 실시간 조회 필요")
                     continue
