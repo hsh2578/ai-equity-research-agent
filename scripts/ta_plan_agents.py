@@ -27,7 +27,7 @@ DEFAULT_MERGE_UNDER = 40000
 # 역할별 고정 입력 목록 (data/{종목}/ 기준 상대경로). 없는 파일은 그냥 빠진다.
 ROLE_FILES = {
     'news': [
-        'ta/news.json', 'ta/event_study.json', 'ta/calendar.json', '_dart_filings.json',
+        'ta/news_relevant.json', 'ta/event_study.json', 'ta/calendar.json', '_dart_filings.json',
     ],
     'fundamentals': [
         'ta/dart/business.txt', 'ta/dart/risk_mgmt.txt', 'ta/dart/notes_selected.txt',
@@ -61,18 +61,26 @@ def _fixed_inputs(stock, files):
 
 
 def _report_inputs(stock, manifest_rel, extra_rel):
-    """manifest_rel 을 읽어 reports[].txt 를 따라간다. 존재하는 파일만 순서대로 반환."""
+    """manifest_rel 을 읽어 reports[].txt 를 따라간다.
+    반환: (존재하는 파일 순서대로, manifest 엔트리는 있는데 파일이 실제로 없는 것들).
+    후자를 조용히 빼먹지 않는다 -- 수집기 경로 불일치를 숨기면 분석가가 그 리포트를
+    아예 못 본 채로 넘어간다."""
     inputs = []
+    missing = []
     if _exists(stock, manifest_rel):
         inputs.append(manifest_rel)
         manifest = tc.read_json(os.path.join(tc.data_dir(stock), manifest_rel), {}) or {}
         for rep in manifest.get('reports', []) or []:
             txt = rep.get('txt')
-            if txt and _exists(stock, txt):
+            if not txt:
+                continue
+            if _exists(stock, txt):
                 inputs.append(txt)
+            else:
+                missing.append({'file': txt, 'reason': 'manifest 에 있으나 파일 없음'})
     if extra_rel and _exists(stock, extra_rel):
         inputs.append(extra_rel)
-    return inputs
+    return inputs, missing
 
 
 def _read_text(stock, rel):
@@ -129,7 +137,7 @@ def _pack_files(stock, files, max_chars):
     return groups
 
 
-def _finalize_calls(role, groups, merge_reason=None):
+def _finalize_calls(role, groups, merge_reason=None, missing_inputs=None):
     n = len(groups)
     calls = []
     for i, (items, chars) in enumerate(groups, start=1):
@@ -139,7 +147,10 @@ def _finalize_calls(role, groups, merge_reason=None):
         else:
             call_id = f'{role}#{i}'
             reason = f'{merge_reason}, 분할 {i}/{n}' if merge_reason else f'용량 초과로 분할 {i}/{n}'
-        calls.append({'call_id': call_id, 'role': role, 'inputs': items, 'chars': chars, 'reason': reason})
+        call = {'call_id': call_id, 'role': role, 'inputs': items, 'chars': chars, 'reason': reason}
+        if missing_inputs:
+            call['missing_inputs'] = missing_inputs
+        calls.append(call)
     return calls
 
 
@@ -149,29 +160,46 @@ def _sum_chars(stock, files):
 
 def build_plan(stock, max_chars=DEFAULT_MAX_CHARS, merge_under=DEFAULT_MERGE_UNDER):
     role_files = {r: _fixed_inputs(stock, ROLE_FILES[r]) for r in ROLE_FILES}
+    role_missing = {}
     for role, (manifest_rel, extra_rel) in REPORT_ROLES.items():
-        role_files[role] = _report_inputs(stock, manifest_rel, extra_rel)
+        role_files[role], role_missing[role] = _report_inputs(stock, manifest_rel, extra_rel)
+
+    warnings = []
+    for role, missing in role_missing.items():
+        for m in missing:
+            warnings.append({'role': role, 'file': m['file'], 'reason': m['reason']})
+
+    special_skip_reasons = {}
+    if not _exists(stock, 'ta/news_relevant.json') and _exists(stock, 'ta/news.json'):
+        # ta_collect_news 는 news.json(원본) 다음 news_relevant.json(관련 항목만)을 만든다.
+        # 후자가 없으면 필터링이 아직 안 끝난 것이므로 원본으로 조용히 대체하지 않는다.
+        role_files['news'] = []
+        special_skip_reasons['news'] = 'news_relevant.json 없음 (ta_collect_news 재실행 필요)'
 
     merged = False
     merged_groups = []
+    merged_missing = []
     if role_files['sellside'] and role_files['industry']:
         combined = role_files['sellside'] + role_files['industry']
         if _sum_chars(stock, combined) < merge_under:
             merged = True
             merged_groups = _pack_files(stock, combined, max_chars)
+            merged_missing = role_missing['sellside'] + role_missing['industry']
 
     calls, skipped = [], []
     for role in ROLE_ORDER:
         if role == 'industry' and merged:
             continue
         if role == 'sellside' and merged:
-            calls.extend(_finalize_calls('sellside+industry', merged_groups, merge_reason='자료 적음으로 병합'))
+            calls.extend(_finalize_calls('sellside+industry', merged_groups,
+                                          merge_reason='자료 적음으로 병합', missing_inputs=merged_missing))
             continue
         files = role_files[role]
         if not files:
-            skipped.append({'role': role, 'reason': '입력 파일 없음'})
+            skipped.append({'role': role, 'reason': special_skip_reasons.get(role, '입력 파일 없음')})
             continue
-        calls.extend(_finalize_calls(role, _pack_files(stock, files, max_chars)))
+        calls.extend(_finalize_calls(role, _pack_files(stock, files, max_chars),
+                                      missing_inputs=role_missing.get(role)))
 
     total_chars = sum(c['chars'] for c in calls)
     return {
@@ -179,6 +207,7 @@ def build_plan(stock, max_chars=DEFAULT_MAX_CHARS, merge_under=DEFAULT_MERGE_UND
         'params': {'max_chars': max_chars, 'merge_under': merge_under},
         'calls': calls,
         'skipped': skipped,
+        'warnings': warnings,
         'totals': {'calls': len(calls), 'chars': total_chars},
     }
 
@@ -196,9 +225,11 @@ def main():
         tc.write_json(out_path, plan)
         tc.manifest_update(args.stock, 'agent_plan', 'ok',
                             calls=plan['totals']['calls'], chars=plan['totals']['chars'],
-                            skipped=len(plan['skipped']))
+                            skipped=len(plan['skipped']), warnings=len(plan['warnings']))
+        for w in plan['warnings']:
+            print(f"[WARN] agent_plan {w['role']}: {w['file']} - {w['reason']}")
         print(f"agent_plan: 호출 {plan['totals']['calls']}개, 총 {plan['totals']['chars']}자, "
-              f"skipped {len(plan['skipped'])}개 -> {out_path}")
+              f"skipped {len(plan['skipped'])}개, warnings {len(plan['warnings'])}개 -> {out_path}")
         return 0
     except Exception as e:
         tc.manifest_update(args.stock, 'agent_plan', 'failed', reason=f'{type(e).__name__}: {e}')

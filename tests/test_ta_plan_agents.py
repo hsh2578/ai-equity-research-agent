@@ -48,7 +48,7 @@ with tempfile.TemporaryDirectory() as td:
     tc.PROJECT_ROOT = td
     try:
         stock = '테스트종목'
-        _write(td, stock, 'ta/news.json', '{"a":1}')
+        _write(td, stock, 'ta/news_relevant.json', '{"a":1}')
         _write(td, stock, 'ta/dart/business.txt', '사업내용 본문')
         plan = pa.build_plan(stock, max_chars=120000, merge_under=40000)
 
@@ -56,8 +56,8 @@ with tempfile.TemporaryDirectory() as td:
         eq(len(news_calls), 1, 'news 역할 1호출')
         eq(news_calls[0]['call_id'], 'news', '분할 없으면 call_id == role')
         eq(news_calls[0]['reason'], '단일', '분할 없으면 사유 단일')
-        eq(news_calls[0]['inputs'], [{'file': 'ta/news.json', 'chars': len('{"a":1}')}],
-           'news 입력에는 존재하는 파일만')
+        eq(news_calls[0]['inputs'], [{'file': 'ta/news_relevant.json', 'chars': len('{"a":1}')}],
+           'news 입력은 news_relevant.json (필터링된 것만)')
 
         fund_calls = [c for c in plan['calls'] if c['role'] == 'fundamentals']
         eq(len(fund_calls), 1, 'fundamentals 도 1호출(다른 입력 없어도 있는 것만)')
@@ -69,6 +69,9 @@ with tempfile.TemporaryDirectory() as td:
            '입력 전부 없는 역할은 skipped')
         for s in plan['skipped']:
             eq(s['reason'], '입력 파일 없음', f"{s['role']} skipped 사유")
+
+        eq(plan['warnings'], [], '누락 manifest 엔트리 없으면 warnings 비어있음')
+        eq('missing_inputs' in news_calls[0], False, '누락 없으면 missing_inputs 키를 안 붙인다')
     finally:
         tc.PROJECT_ROOT = orig
 
@@ -196,7 +199,15 @@ with tempfile.TemporaryDirectory() as td:
         files = [it['file'] for it in sell_calls[0]['inputs']]
         eq(files, ['ta/reports/company/_manifest.json',
                     'ta/reports/company/nv_1.txt', 'ta/reports/company/hk_3.txt'],
-           'manifest + 존재하는 reports[].txt 만 순서대로 (없는 nv_2 는 빠짐)')
+           'manifest + 존재하는 reports[].txt 만 순서대로 담긴다 (없는 nv_2 는 inputs 에서 빠짐)')
+        # 없는 nv_2.txt 는 조용히 사라지지 않고 missing_inputs/warnings 에 남는다
+        eq(sell_calls[0].get('missing_inputs'),
+           [{'file': 'ta/reports/company/nv_2.txt', 'reason': 'manifest 에 있으나 파일 없음'}],
+           '호출에 missing_inputs 기록')
+        eq(plan['warnings'],
+           [{'role': 'sellside', 'file': 'ta/reports/company/nv_2.txt',
+             'reason': 'manifest 에 있으나 파일 없음'}],
+           'top-level warnings 에도 기록')
     finally:
         tc.PROJECT_ROOT = orig
 
@@ -215,6 +226,83 @@ with tempfile.TemporaryDirectory() as td:
            'fundamentals 도 risk_mgmt.txt 를 본다')
         eq(any(it['file'] == 'ta/dart/risk_mgmt.txt' for it in macro['inputs']), True,
            'macro 도 risk_mgmt.txt 를 본다(중복 허용)')
+    finally:
+        tc.PROJECT_ROOT = orig
+
+
+# ==================== 7. news_relevant.json 없으면 news.json 으로 몰래 대체하지 않는다 ====================
+with tempfile.TemporaryDirectory() as td:
+    orig = tc.PROJECT_ROOT
+    tc.PROJECT_ROOT = td
+    try:
+        stock = '뉴스미완료종목'
+        # news.json(원본)만 있고 news_relevant.json(필터링본)은 아직 없음.
+        # event_study.json 처럼 news 역할의 다른 입력이 있어도 role 전체를 skipped 로 보낸다.
+        _write(td, stock, 'ta/news.json', 'X' * 500000)
+        _write(td, stock, 'ta/event_study.json', '{}')
+        plan = pa.build_plan(stock, max_chars=120000, merge_under=40000)
+
+        eq(any(c['role'] == 'news' for c in plan['calls']), False,
+           'news_relevant.json 없으면 news 호출을 만들지 않는다')
+        eq(any('news.json' in it['file'] for c in plan['calls'] for it in c['inputs']), False,
+           'news.json(원본) 은 어떤 호출 입력에도 조용히 들어가지 않는다')
+        news_skip = [s for s in plan['skipped'] if s['role'] == 'news']
+        eq(len(news_skip), 1, 'news 는 skipped 에 1건')
+        eq(news_skip[0]['reason'], 'news_relevant.json 없음 (ta_collect_news 재실행 필요)',
+           'skipped 사유가 재실행 필요를 명시한다')
+
+        # news.json 도 news_relevant.json 도 둘 다 없으면 일반 사유
+        stock2 = '뉴스둘다없음종목'
+        plan2 = pa.build_plan(stock2, max_chars=120000, merge_under=40000)
+        news_skip2 = [s for s in plan2['skipped'] if s['role'] == 'news']
+        eq(news_skip2[0]['reason'], '입력 파일 없음', '뉴스 파일이 둘 다 없으면 일반 skipped 사유')
+
+        # news_relevant.json 이 있으면 news.json 존재 여부와 무관하게 정상 처리
+        stock3 = '뉴스정상종목'
+        _write(td, stock3, 'ta/news.json', 'X' * 500000)
+        _write(td, stock3, 'ta/news_relevant.json', '관련 뉴스만')
+        plan3 = pa.build_plan(stock3, max_chars=120000, merge_under=40000)
+        news_calls3 = [c for c in plan3['calls'] if c['role'] == 'news']
+        eq(len(news_calls3), 1, 'news_relevant.json 이 있으면 news 호출이 정상 생성된다')
+        eq([it['file'] for it in news_calls3[0]['inputs']], ['ta/news_relevant.json'],
+           'news.json 이 같이 있어도 news_relevant.json 만 쓴다')
+    finally:
+        tc.PROJECT_ROOT = orig
+
+
+# ==================== 8. 병합된 sellside+industry 호출도 missing_inputs 를 합쳐서 기록 ====================
+with tempfile.TemporaryDirectory() as td:
+    orig = tc.PROJECT_ROOT
+    tc.PROJECT_ROOT = td
+    try:
+        stock = '병합누락종목'
+        tc.write_json(os.path.join(td, 'data', stock, 'ta', 'reports', 'company', '_manifest.json'),
+                       {'reports': [
+                           {'txt': 'ta/reports/company/nv_1.txt'},
+                           {'txt': 'ta/reports/company/nv_missing.txt'},   # 파일 없음
+                       ]})
+        _write(td, stock, 'ta/reports/company/nv_1.txt', 'X' * 50)
+        tc.write_json(os.path.join(td, 'data', stock, 'ta', 'reports', 'industry', '_manifest.json'),
+                       {'reports': [
+                           {'txt': 'ta/reports/industry/nv_2.txt'},
+                           {'txt': 'ta/reports/industry/nv_missing2.txt'},  # 파일 없음
+                       ]})
+        _write(td, stock, 'ta/reports/industry/nv_2.txt', 'Y' * 50)
+
+        plan = pa.build_plan(stock, max_chars=120000, merge_under=10 ** 9)  # 합계가 작아 병합됨
+        merged_calls = [c for c in plan['calls'] if c['role'] == 'sellside+industry']
+        eq(len(merged_calls), 1, '병합 호출 1개')
+        eq(merged_calls[0].get('missing_inputs'), [
+            {'file': 'ta/reports/company/nv_missing.txt', 'reason': 'manifest 에 있으나 파일 없음'},
+            {'file': 'ta/reports/industry/nv_missing2.txt', 'reason': 'manifest 에 있으나 파일 없음'},
+        ], '병합 호출은 sellside + industry 양쪽 누락을 합쳐 기록')
+
+        eq(sorted(plan['warnings'], key=lambda w: w['file']), sorted([
+            {'role': 'sellside', 'file': 'ta/reports/company/nv_missing.txt',
+             'reason': 'manifest 에 있으나 파일 없음'},
+            {'role': 'industry', 'file': 'ta/reports/industry/nv_missing2.txt',
+             'reason': 'manifest 에 있으나 파일 없음'},
+        ], key=lambda w: w['file']), 'top-level warnings 는 병합 여부와 무관하게 역할별로 남는다')
     finally:
         tc.PROJECT_ROOT = orig
 
