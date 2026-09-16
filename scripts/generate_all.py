@@ -3548,7 +3548,7 @@ def _detect_version(sections: dict) -> str:
     return "v4"
 
 
-def _apply_section_order(order, sections, titles=None):
+def _apply_section_order(order, sections, titles=None, labels=None):
     """meta.section_order 로 v5 12섹션을 재정렬/축약한다 (위닝펀드 6섹션 구조용).
 
     2026-09 위닝펀드 수상작 12편 실측: 본문 섹션이 6개뿐이고
@@ -3592,7 +3592,20 @@ def _apply_section_order(order, sections, titles=None):
         raise ValueError(
             f"meta.section_titles 의 {', '.join(bad)} 는 정규 12키가 아니다. "
             f"가능한 키: {', '.join(table)}")
-    return [(k, f"{i:02d}", table[k][2], ov.get(k) or table[k][3])
+
+    # task-13: meta.section_labels 로 영문 캡션만 덮어쓴다 (한글 제목은 titles 몫).
+    # /research-ta 가 기술적 분석 섹션을 s08_esg 자리에 넣으면 본문 캡션이
+    # "08 · ESG" 로 찍히는 문제 때문에 신설. 없으면 기존 동작 그대로다.
+    lv = labels or {}
+    if not isinstance(lv, dict):
+        raise ValueError('meta.section_labels 는 {키: 영문라벨} 매핑이어야 한다')
+    bad_l = [k for k in lv if k not in table]
+    if bad_l:
+        raise ValueError(
+            f"meta.section_labels 의 {', '.join(bad_l)} 는 정규 12키가 아니다. "
+            f"가능한 키: {', '.join(table)}")
+
+    return [(k, f"{i:02d}", lv.get(k) or table[k][2], ov.get(k) or table[k][3])
             for i, k in enumerate(order, start=1)]
 
 
@@ -3605,7 +3618,8 @@ def _get_section_titles(data) -> list:
     order = meta.get("section_order")
     if not order:
         return _SECTION_TITLES_DETAILED_V5
-    return _apply_section_order(list(order), sections, meta.get("section_titles"))
+    return _apply_section_order(list(order), sections, meta.get("section_titles"),
+                                 meta.get("section_labels"))
 
 
 # 하위 호환: 기존 코드가 _SECTION_TITLES_DETAILED 참조 시 v4 사용
