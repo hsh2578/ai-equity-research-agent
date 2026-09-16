@@ -1,0 +1,210 @@
+"""ta_plan_agents.py -- /research-ta 분석가 서브에이전트 호출 계획 (Task 9).
+
+분석가 인원을 고정하지 않는다. 역할별 입력 자료 묶음이 한 에이전트 맥락
+(max-chars)에 온전히 들어가는지로 호출 수를 정한다:
+  - 자료가 작으면 역할당 1호출.
+  - 넘치면 파일 단위로 순서대로 채워 여러 호출로 나눈다.
+  - 파일 하나가 혼자 넘치면 그 파일만 줄 경계에서 잘라 여러 호출에 나눠 담는다.
+  - sellside/industry 는 둘 다 자료가 적으면(합계 < merge-under) 한 호출로 합친다.
+
+CLI: python scripts/ta_plan_agents.py {종목명} [--max-chars 120000] [--merge-under 40000]
+출력: data/{종목}/ta/agent_plan.json
+"""
+import argparse
+import io
+import os
+import sys
+
+if (getattr(sys.stdout, 'encoding', '') or '').lower().replace('-', '') != 'utf8':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ta_common as tc  # noqa: E402
+
+DEFAULT_MAX_CHARS = 120000
+DEFAULT_MERGE_UNDER = 40000
+
+# 역할별 고정 입력 목록 (data/{종목}/ 기준 상대경로). 없는 파일은 그냥 빠진다.
+ROLE_FILES = {
+    'news': [
+        'ta/news.json', 'ta/event_study.json', 'ta/calendar.json', '_dart_filings.json',
+    ],
+    'fundamentals': [
+        'ta/dart/business.txt', 'ta/dart/risk_mgmt.txt', 'ta/dart/notes_selected.txt',
+        'ta/dart/mdna.txt', 'ta/dart_diff.json', '_dart_quarterly.json', '_fnguide.json',
+        'financial_summary.json', '_drivers.md', '_evidence_scan.json',
+    ],
+    'macro': [
+        'ta/dart/risk_mgmt.txt', 'ta/macro.json',
+    ],
+    'market': [
+        'ta/market_data.json', 'ta/board.json', 'ta/flow.json',
+        '_price_cycles.json', '_volatility_beta.json', 'ta/telegram.json',
+    ],
+}
+
+# manifest 를 따라가는 역할: (manifest 상대경로, manifest 외 추가 파일)
+REPORT_ROLES = {
+    'sellside': ('ta/reports/company/_manifest.json', '_wisereport_consensus.json'),
+    'industry': ('ta/reports/industry/_manifest.json', '_peer_snapshot.json'),
+}
+
+ROLE_ORDER = ['news', 'fundamentals', 'sellside', 'industry', 'macro', 'market']
+
+
+def _exists(stock, rel):
+    return os.path.exists(os.path.join(tc.data_dir(stock), rel))
+
+
+def _fixed_inputs(stock, files):
+    return [f for f in files if _exists(stock, f)]
+
+
+def _report_inputs(stock, manifest_rel, extra_rel):
+    """manifest_rel 을 읽어 reports[].txt 를 따라간다. 존재하는 파일만 순서대로 반환."""
+    inputs = []
+    if _exists(stock, manifest_rel):
+        inputs.append(manifest_rel)
+        manifest = tc.read_json(os.path.join(tc.data_dir(stock), manifest_rel), {}) or {}
+        for rep in manifest.get('reports', []) or []:
+            txt = rep.get('txt')
+            if txt and _exists(stock, txt):
+                inputs.append(txt)
+    if extra_rel and _exists(stock, extra_rel):
+        inputs.append(extra_rel)
+    return inputs
+
+
+def _read_text(stock, rel):
+    with open(os.path.join(tc.data_dir(stock), rel), encoding='utf-8') as f:
+        return f.read()
+
+
+def _split_lines_by_size(lines, max_chars):
+    """lines: splitlines(keepends=True) 결과. (start, end, chars) 1-indexed 포함구간 목록.
+    한 줄이 max_chars 보다 커도 무한루프 없이 그 줄 하나로 청크를 만든다."""
+    chunks = []
+    n = len(lines)
+    i = 0
+    while i < n:
+        start = i
+        chars = 0
+        while i < n and (chars + len(lines[i]) <= max_chars or i == start):
+            chars += len(lines[i])
+            i += 1
+        chunks.append((start + 1, i, chars))
+    return chunks
+
+
+def _pack_files(stock, files, max_chars):
+    """존재하는 파일 목록(순서대로)을 max_chars 이하 그룹으로 채운다.
+    반환: [(items, chars), ...]. items 원소는
+      {'file':rel,'chars':n} 또는 {'file':rel,'lines':[s,e],'chars':n}."""
+    groups = []
+    current, current_chars = [], 0
+
+    def _flush():
+        nonlocal current, current_chars
+        if current:
+            groups.append((current, current_chars))
+            current, current_chars = [], 0
+
+    for rel in files:
+        text = _read_text(stock, rel)
+        total = len(text)
+        if total <= max_chars:
+            if current and current_chars + total > max_chars:
+                _flush()
+            current.append({'file': rel, 'chars': total})
+            current_chars += total
+        else:
+            _flush()
+            lines = text.splitlines(keepends=True)
+            for start, end, chars in _split_lines_by_size(lines, max_chars):
+                if current and current_chars + chars > max_chars:
+                    _flush()
+                current.append({'file': rel, 'lines': [start, end], 'chars': chars})
+                current_chars += chars
+    _flush()
+    return groups
+
+
+def _finalize_calls(role, groups, merge_reason=None):
+    n = len(groups)
+    calls = []
+    for i, (items, chars) in enumerate(groups, start=1):
+        if n == 1:
+            call_id = role
+            reason = merge_reason or '단일'
+        else:
+            call_id = f'{role}#{i}'
+            reason = f'{merge_reason}, 분할 {i}/{n}' if merge_reason else f'용량 초과로 분할 {i}/{n}'
+        calls.append({'call_id': call_id, 'role': role, 'inputs': items, 'chars': chars, 'reason': reason})
+    return calls
+
+
+def _sum_chars(stock, files):
+    return sum(len(_read_text(stock, f)) for f in files)
+
+
+def build_plan(stock, max_chars=DEFAULT_MAX_CHARS, merge_under=DEFAULT_MERGE_UNDER):
+    role_files = {r: _fixed_inputs(stock, ROLE_FILES[r]) for r in ROLE_FILES}
+    for role, (manifest_rel, extra_rel) in REPORT_ROLES.items():
+        role_files[role] = _report_inputs(stock, manifest_rel, extra_rel)
+
+    merged = False
+    merged_groups = []
+    if role_files['sellside'] and role_files['industry']:
+        combined = role_files['sellside'] + role_files['industry']
+        if _sum_chars(stock, combined) < merge_under:
+            merged = True
+            merged_groups = _pack_files(stock, combined, max_chars)
+
+    calls, skipped = [], []
+    for role in ROLE_ORDER:
+        if role == 'industry' and merged:
+            continue
+        if role == 'sellside' and merged:
+            calls.extend(_finalize_calls('sellside+industry', merged_groups, merge_reason='자료 적음으로 병합'))
+            continue
+        files = role_files[role]
+        if not files:
+            skipped.append({'role': role, 'reason': '입력 파일 없음'})
+            continue
+        calls.extend(_finalize_calls(role, _pack_files(stock, files, max_chars)))
+
+    total_chars = sum(c['chars'] for c in calls)
+    return {
+        'stock': stock,
+        'params': {'max_chars': max_chars, 'merge_under': merge_under},
+        'calls': calls,
+        'skipped': skipped,
+        'totals': {'calls': len(calls), 'chars': total_chars},
+    }
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('stock')
+    ap.add_argument('--max-chars', type=int, default=DEFAULT_MAX_CHARS)
+    ap.add_argument('--merge-under', type=int, default=DEFAULT_MERGE_UNDER)
+    args = ap.parse_args()
+
+    try:
+        plan = build_plan(args.stock, args.max_chars, args.merge_under)
+        out_path = os.path.join(tc.ta_dir(args.stock), 'agent_plan.json')
+        tc.write_json(out_path, plan)
+        tc.manifest_update(args.stock, 'agent_plan', 'ok',
+                            calls=plan['totals']['calls'], chars=plan['totals']['chars'],
+                            skipped=len(plan['skipped']))
+        print(f"agent_plan: 호출 {plan['totals']['calls']}개, 총 {plan['totals']['chars']}자, "
+              f"skipped {len(plan['skipped'])}개 -> {out_path}")
+        return 0
+    except Exception as e:
+        tc.manifest_update(args.stock, 'agent_plan', 'failed', reason=f'{type(e).__name__}: {e}')
+        print(f'[실패] agent_plan: {type(e).__name__}: {e}')
+        return 1
+
+
+if __name__ == '__main__':
+    sys.exit(main())
