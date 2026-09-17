@@ -2,10 +2,10 @@
 """가독성 게이트 R1~R4 (/research-ta, 2026-09-18 사용자 지적 "내용을 이해하기 어렵다").
 
 기존 검증기는 전부 "숫자를 더 넣어라" 방향이라 반대 방향 검사가 없으면 글이 산식으로 채워진다.
-R1 요약 첫 블록에 액션 플랜 표(언제 / 확인 / 되면 / 안 되면)      R3 용어 박스 8개+ (첫 등장 용어 풀이)
+R1 요약 첫 블록의 액션 플랜 표 -- 선택(사용자 결정 2026-09-18: 초판 형식이 낫다, 없으면 SKIP)      R3 용어 박스 -- 선택(없으면 SKIP, 두면 8개+ 아니면 WARN)
 R2 본문 문장당 숫자 <= 1.5개 (표·마진노트·인용 제외)                 R4 같은 금액 표기가 5회+ 반복되면 WARN (판정 ⑥ 근거)
 
-usage: python scripts/ta_readability_gate.py {종목명} [--analysis path]   (R1~R3 0 FAIL 필수)
+usage: python scripts/ta_readability_gate.py {종목명} [--analysis path]   (전 항목 WARN/SKIP -- 강제 없음, 밀도·반복 참고용)
 """
 import io
 import json
@@ -61,11 +61,11 @@ def check(a):
     heavy = [(k, v) for k, v in rep.most_common() if v >= REPEAT_WARN]
     g = glossary_count(s01)
     out = [
-        {'id': 'R1', 'status': 'PASS' if action_table(s01) else 'FAIL', 'value': '있음' if action_table(s01) else '없음',
+        {'id': 'R1', 'status': 'PASS' if action_table(s01) else 'SKIP', 'value': '있음' if action_table(s01) else '없음',
          'note': '요약 첫 블록에 액션 플랜 표 (언제 / 무엇을 확인 / 되면 / 안 되면)'},
         {'id': 'R2', 'status': 'PASS' if nps <= MAX_NUM_PER_SENT else 'WARN', 'value': f'{nps:.2f}개/문장 ({len(sents)}문장)',
          'note': f'본문 문장당 숫자 <= {MAX_NUM_PER_SENT} (표·마진노트·인용 제외, 기준선 미확정이라 WARN)'},
-        {'id': 'R3', 'status': 'PASS' if g >= MIN_GLOSS else 'FAIL', 'value': f'{g}개', 'note': f'용어 박스 {MIN_GLOSS}개+ (#### 용어)'},
+        {'id': 'R3', 'status': 'PASS' if g >= MIN_GLOSS else ('SKIP' if g == 0 else 'WARN'), 'value': f'{g}개', 'note': f'용어 박스는 선택(사용자 결정 2026-09-18: 없는 쪽이 낫다). 두면 {MIN_GLOSS}개+'},
         {'id': 'R4', 'status': 'WARN' if heavy else 'PASS', 'value': ', '.join(f'{k} x{v}' for k, v in heavy[:4]) or '-',
          'note': f'같은 금액 표기 {REPEAT_WARN}회+ 반복 (요약·투자포인트·리스크·재무가 같은 사실을 되풀이하는 신호)'},
     ]

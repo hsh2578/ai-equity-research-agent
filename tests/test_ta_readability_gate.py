@@ -31,8 +31,8 @@ eq(by['R4']['status'], 'PASS', '반복 없으면 R4 PASS')
 B = {'meta': A['meta'], 'sections': {'s01_opinion_thesis': '### 제목\n\n주가는 싸다.\n',
                                      's06_financial': '매출 1,000억원 영업이익 100억원 순이익 50억원 부채 300억원이다. ' * 3}}
 byb = {r['id']: r for r in g.check(B)}
-eq(byb['R1']['status'], 'FAIL', '액션 표 없으면 R1 FAIL')
-eq(byb['R3']['status'], 'FAIL', '용어 박스 없으면 R3 FAIL')
+eq(byb['R1']['status'], 'SKIP', '액션 표 없으면 R1 SKIP (선택 항목)')
+eq(byb['R3']['status'], 'SKIP', '용어 박스 없으면 R3 SKIP (선택 항목)')
 eq(byb['R2']['status'], 'WARN', '문장당 숫자 4개면 R2 WARN (기준선 미확정)')
 
 C = {'meta': A['meta'], 'sections': {'s01_opinion_thesis': S01, 's06_financial': '단기차입금은 1,426억원이다. ' * 5}}
