@@ -12,6 +12,7 @@ CLI: python scripts/ta_plan_agents.py {종목명} [--max-chars 120000] [--merge-
 """
 import argparse
 import io
+import glob
 import os
 import sys
 
@@ -50,6 +51,24 @@ REPORT_ROLES = {
 }
 
 ROLE_ORDER = ['news', 'fundamentals', 'sellside', 'industry', 'macro', 'market']
+
+# IR협의회 구성 역분석(docs/research-ta/kirs-construction.md) 후 추가된 재료 -- 산업은 협회·정부 통계와
+# 고객사·경쟁사 공개자료, 셀사이드(회사 설명)는 회사 발언·KIND IR 발표자료. glob 은 최신순 상한.
+ROLE_EXTRA = {
+    'industry': [('ta/trade_stats.json', None), ('ta/customer_docs/*.md', 6)],
+    'sellside': [('ta/company_voice.md', None), ('ta/ir_materials/*.txt', 4)],
+}
+
+
+def _extra_inputs(stock, role):
+    out = []
+    for pat, cap in ROLE_EXTRA.get(role, []):
+        if '*' in pat:
+            hits = sorted(glob.glob(os.path.join(tc.data_dir(stock), pat)), reverse=True)[:cap or None]
+            out += [os.path.relpath(h, tc.data_dir(stock)).replace(os.sep, '/') for h in hits]
+        elif _exists(stock, pat):
+            out.append(pat)
+    return out
 
 
 def _exists(stock, rel):
@@ -183,6 +202,7 @@ def build_plan(stock, max_chars=DEFAULT_MAX_CHARS, merge_under=DEFAULT_MERGE_UND
     role_missing = {}
     for role, (manifest_rel, extra_rel) in REPORT_ROLES.items():
         role_files[role], role_missing[role] = _report_inputs(stock, manifest_rel, extra_rel)
+        role_files[role] = role_files[role] + [f for f in _extra_inputs(stock, role) if f not in role_files[role]]
 
     special_skip_reasons = {}
     if not _exists(stock, 'ta/news_relevant.json') and _exists(stock, 'ta/news.json'):

@@ -16,6 +16,15 @@
     지배주주 분리가 없으면 연결 기준, 기초 잔액이 없으면 기말 기준으로 내리고 item.note 에 적는다.
     나머지 비율(부채·유동비율 등)은 기말 잔액. 각 item 의 definition 이 실제 쓴 식이다.
 
+본문 대조(check) 규칙 -- CJ프레시웨이 실측에서 FAIL 54건 중 진짜 결함이 2건이라 다듬었다
+  - 지표 이름 뒤 30자 안의 첫 숫자만 본다. 문장이 끝나면(다. / 문단) 다음 문장의 숫자는 보지 않는다.
+  - 표는 이름만 있는 셀의 다음 셀 값을 보고, 다른 글이 섞인 셀은 다음 셀로 넘어가지 않는다.
+  - "5개년 / 20일 / 600억 / 6월" 같은 기간·단위, "500% 이하 / 5%대 / 1%포인트" 같은 기준선은 값이 아니다.
+  - 순부채비율은 부채비율이 아니다(이름 앞 경계).
+  - 장부값과 다른데 주변에 반기·분기·부문·재분류·타사·FnGuide·장부에 없는 연도가 적혀 있으면 FAIL 이 아니라
+    WARN(작성자 출처 확인)이다. 올해 값은 반기 누적이라 기간을 'FY{년} YTD' 로 적는다.
+  - 비율은 재무요약에 있는 모든 연도를 계산한다(본문 표가 4~5개년을 싣는다).
+
 식 출처(수정하지 않고 일치만 맞춘다)
   - Altman Z: verify_numbers.py B17 -- 1.2(CA-CL)/TA + 1.4 RE/TA + 3.3 EBIT/TA + 0.6 MC/TL + 1.0 Sales/TA
   - 적정 PBR: ggm_check.implied_pbr -- (ROE-g)/(ke-g)
@@ -26,6 +35,7 @@ import os
 import re
 import sys
 import argparse
+import datetime as _dt
 from decimal import Decimal, ROUND_HALF_UP
 
 if (getattr(sys.stdout, 'encoding', '') or '').lower().replace('-', '') != 'utf8':
@@ -187,6 +197,11 @@ class _Book:
         return it
 
 
+def _period(year):
+    """올해 값은 반기·분기 누적이라 FY 와 구분한다 (check 의 연도 판정은 startswith 로 본다)."""
+    return f'FY{year} YTD' if str(year) == str(_dt.date.today().year) else f'FY{year}'
+
+
 def _latest_fy(fs):
     ya = str((fs.get('forward') or {}).get('year_actual') or '')[:4]
     years = sorted(k for k in (fs.get('financials') or {}) if k.isdigit())
@@ -297,7 +312,7 @@ def source_basis(S, source):
 
 def _ratio(book, S, key, year, num, den, unit='ratio', definition=''):
     refs, inputs, miss = _gather(book, _fs_pairs(S, year, [num, den]))
-    period = f'FY{year}'
+    period = _period(year)
     if miss:
         return book.add(key, unit, period, inputs=inputs, reason=_miss_reason(miss), definition=definition)
     n, d = inputs[f'{num}_{year}']['value'], inputs[f'{den}_{year}']['value']
@@ -310,7 +325,7 @@ def _ratio(book, S, key, year, num, den, unit='ratio', definition=''):
 def _avg_ratio(book, S, key, year, num, den, definition, fallback_definition, note=None):
     """num_y / ((den_{y-1} + den_y) / 2). 기초 잔액이 없으면 기말 기준으로 내리고 note 에 적는다."""
     py = str(int(year) - 1)
-    period = f'FY{year}'
+    period = _period(year)
     extra = {'definition': definition}
     notes = [note] if note else []
     if notes:
@@ -343,10 +358,8 @@ def build_ledger(fs, market=None, assumptions=None, fnguide=None, dart=None):
     fy = _latest_fy(fs)
     py = str(int(fy) - 1) if fy else None
 
-    # ---- 비율 (최근 + 전년) ----
-    for y in (fy, py):
-        if not y:
-            continue
+    # ---- 비율 (재무요약에 있는 모든 연도 -- 본문 표가 4~5개년을 싣는다) ----
+    for y in sorted((k for k in (fs.get('financials') or {}) if k.isdigit()), reverse=True):
         if _fs(S, y, 'net_income_ctrl')[0] is not None and _fs(S, y, 'controlling_equity')[0] is not None:
             _avg_ratio(book, S, 'roe', y, 'net_income_ctrl', 'controlling_equity',
                        'ROE = 지배주주 순이익 / 평균 지배주주지분((기초+기말)/2)',
@@ -643,6 +656,34 @@ def build_ledger(fs, market=None, assumptions=None, fnguide=None, dart=None):
         if price:
             book.add('sotp_expected_upside', 'ratio', 'SOTP weighted vs price', ev / price - 1, '', winp)
 
+    # PER 시나리오 (assumptions.per_scenarios): EPS x 배수 -- IR협의회식 밴드+Peer 위치 판단과 판단 블록의 시나리오
+    ps = A.get('per_scenarios') or {}
+    for name, sc in ps.items():
+        eref = book.inp(f'per_eps_{name}', sc.get('eps'), src('per_scenarios') + f' {name}.eps')
+        mref = book.inp(f'per_multiple_{name}', sc.get('per'), src('per_scenarios') + f' {name}.per')
+        inputs = {f'per_eps_{name}': {'value': sc.get('eps'), 'source': src('per_scenarios'), 'cell': eref},
+                  f'per_multiple_{name}': {'value': sc.get('per'), 'source': src('per_scenarios'), 'cell': mref}}
+        if sc.get('eps') is None or sc.get('per') is None:
+            book.add(f'per_value_{name}', 'KRW', f'PER {name}', inputs=inputs, reason='eps 또는 per 없음')
+            continue
+        v = sc['eps'] * sc['per']
+        book.add(f'per_value_{name}', 'KRW', f'PER {name}', v, f'={eref}*{mref}', inputs, note=sc.get('note', ''))
+        if price:
+            pr = book.inp('price', price, price_src)
+            book.add(f'per_upside_{name}', 'ratio', f'PER {name} vs price', v / price - 1, f'={eref}*{mref}/{pr}-1', inputs)
+    wts = A.get('weights') or {}
+    pv = {it['key'][len('per_value_'):]: it for it in book.items if it['key'].startswith('per_value_')}
+    if wts and all(k in pv and pv[k]['status'] == 'ok' for k in wts):
+        winp, terms = {}, []
+        for k, w in wts.items():
+            ref = book.inp(f'per_weight_{k}', w, src('weights') + f' {k}')
+            winp[f'per_weight_{k}'] = {'value': w, 'source': src('weights'), 'cell': ref}
+            terms.append(f"{ref}*{pv[k]['cell']}")
+        ev = sum(w * pv[k]['value'] for k, w in wts.items())
+        book.add('per_expected_value', 'KRW', 'PER weighted', ev, '=' + '+'.join(terms), winp, note='시나리오 확률은 판단값(assumptions.weights)')
+        if price:
+            book.add('per_expected_upside', 'ratio', 'PER weighted vs price', ev / price - 1, '', winp)
+
     # 입력 단위를 항목마다 명시한다 (비율 자체는 무단위, 입력이 무엇이었는지 기록)
     input_units = {
         'dfl': 'EPS 원/주, 영업이익 ' + STATEMENT_UNIT, 'dcl': 'dol x dfl',
@@ -715,10 +756,16 @@ CHECK_NAMES = {
     '유동 비율': ['current_ratio'], '이자 보상 배율': ['interest_coverage'],
 }
 _CANON = sorted(CHECK_NAMES, key=len, reverse=True)
-_NAME_RE = re.compile('|'.join(f'(?P<n{i}>' + r'\s*'.join(re.escape(w) for w in n.split(' ')) + ')'
-                               for i, n in enumerate(_CANON)))
+_NAME_RE = re.compile(r'(?<![가-힣A-Za-z])(?:' + '|'.join(f'(?P<n{i}>' + r'\s*'.join(re.escape(w) for w in n.split(' ')) + ')'
+                                                  for i, n in enumerate(_CANON)) + ')')
 _NUM_RE = re.compile(r'(?<![\d.])([-\u2212]?)(\d{1,3}(?:,\d{3})+|\d+)(\.\d+)?\s*(%?)')
-_PERIOD_AFTER = re.compile(r'\s*(개년|년|분기|개월|영업일|거래일|일)')   # "5개년", "20일" 은 지표값이 아니다
+_PERIOD_AFTER = re.compile(r'\s*(개년|년|분기|개월|영업일|거래일|일|억|조|만|명|건|곳|개|kg|톤|회|호|주|월)')   # "5개년", "20일", "600억" 은 지표값이 아니다
+_THRESHOLD_AFTER = re.compile(r'\s*(이하|미만|이상|초과|돌파|대(?!비)|포인트|p\b|를 넘|을 넘|넘|밑돌)')  # "500% 이하", "5%대" 는 기준선이지 값이 아니다
+_SENTENCE_END = re.compile(r'\.(?=\s|$)|\n\s*\n')   # 문장 끝 / 문단 끝
+_CELL_TEXT = re.compile(r'[0-9A-Za-z가-힣%]')
+_SCOPE = re.compile(r'상반기|하반기|반기|[1-4]\s*분기|[1-4]Q|[12]H\s*\d\d|누적|연환산|부문|사업부|별도|재분류|IR|타사|경쟁사|vs\.?|대비|컨센|가정|시나리오|FnGuide|와이즈')
+_YEAR = re.compile(r'(?<!\d)(20\d\d)(?!\d)')
+SCOPE_BEFORE = 20
 _VAR_HORIZON = re.compile(r'(?<![\d월])(?<!월 )(\d+)\s*(?:영업일|거래일|일)(?!간)')  # '9월 20일' 같은 날짜는 제외
 VAR_BEFORE = 8
 VAR_LEVELS = ('90', '95', '97.5', '99', '99.9')
@@ -740,21 +787,33 @@ def check_sections(sections, ledger):
         for m in _NAME_RE.finditer(text):
             name = _CANON[int(m.lastgroup[1:])]
             win_start = m.end()
-            window = text[win_start:win_start + WINDOW]
+            raw = text[win_start:win_start + WINDOW + 12]   # 30자 경계에서 숫자가 잘리지 않게 여유를 두고 읽는다
+            cut = _SENTENCE_END.search(raw)
+            window = raw[:cut.start()] if cut else raw      # 문장이 끝나면 다음 문장의 숫자는 이 지표의 값이 아니다
+            bar = window.find('|')
+            if bar >= 0 and _CELL_TEXT.search(window[:bar]):
+                window = window[:bar]   # 표: 이름만 있는 셀은 다음 셀의 값을 보고, 다른 글이 섞인 셀은 넘어가지 않는다
             var_level = None
+            found = None
             for nm in _NUM_RE.finditer(window):
+                if nm.start() >= WINDOW:
+                    break
                 sign, whole, frac, pct = nm.groups()
                 whole = whole.replace(',', '')
                 if not frac and not pct and len(whole) == 4 and 1990 <= int(whole) <= 2100:
                     continue  # 연도
                 if not pct and _PERIOD_AFTER.match(window, nm.end()):
-                    continue  # 기간 표기 (5개년, 3분기, 20일)
+                    continue  # 기간·단위 표기 (5개년, 3분기, 20일, 600억)
+                if _THRESHOLD_AFTER.match(window, nm.end()):
+                    continue  # 기준선 (500% 이하, 5%대, 1%포인트)
                 if name == 'VaR' and pct and not sign and whole + (frac or '') in VAR_LEVELS and var_level is None:
                     var_level = whole + (frac or '')
                     continue  # 신뢰수준
+                found = nm
                 break
-            else:
+            if found is None:
                 continue
+            nm = found
             pos = win_start + nm.start()
             if (sec, pos) in seen:
                 continue
@@ -797,6 +856,13 @@ def check_sections(sections, ledger):
                 r['result'] = 'PASS' if hit else 'FAIL'
                 if not hit:  # 엄격 비교는 유지하되, 정의 차이가 원인인지 작성자가 보게 한다
                     r['definitions'] = sorted({i.get('definition', '') for i in cands if i.get('definition')})
+                    around = text[max(0, m.start() - SCOPE_BEFORE):m.start()] + text[win_start:pos] + text[pos:pos + 14]
+                    periods = {i['period'] for i in cands}
+                    other_year = any(not any(p.startswith(f'FY{y}') for p in periods) for y in _YEAR.findall(around))
+                    if _SCOPE.search(around) or other_year:
+                        # 반기·부문·타사·재분류·장부에 없는 연도 -- FY 연결 장부값과 같을 이유가 없다. 작성자가 출처를 확인한다
+                        r['result'] = 'WARN'
+                        r['reason'] = '장부 밖 기간·범위 표기 (작성자 출처 확인)'
             results.append(r)
     return results
 

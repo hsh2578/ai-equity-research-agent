@@ -50,7 +50,11 @@ def ttm_yoy(series, end_ym):
         return None
     cur = sum(r['exp_usd'] for r in rows[12:])
     prev = sum(r['exp_usd'] for r in rows[:12])
-    return {'exp_ttm': cur, 'exp_ttm_prev': prev, 'yoy': (cur / prev - 1) if prev else None}
+    icur = sum(r.get('imp_usd', 0) for r in rows[12:])
+    iprev = sum(r.get('imp_usd', 0) for r in rows[:12])
+    # 수입 종목(식자재·원재료)은 imp 쪽이 본체 -- 수출만 보면 0 이라 yoy 가 None 이 된다(CJ프레시웨이 실측)
+    return {'exp_ttm': cur, 'exp_ttm_prev': prev, 'yoy': (cur / prev - 1) if prev else None,
+            'imp_ttm': icur, 'imp_ttm_prev': iprev, 'imp_yoy': (icur / iprev - 1) if iprev else None}
 
 
 def _fetch_once(hs, country, start_ym, end_ym, key):

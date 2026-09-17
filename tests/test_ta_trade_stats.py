@@ -40,6 +40,9 @@ eq(y['exp_ttm'], sum(100 + i for i in range(12, 24)), '최근 12개월 합')
 eq(y['exp_ttm_prev'], sum(100 + i for i in range(0, 12)), '직전 12개월 합')
 eq(round(y['yoy'], 4), round(y['exp_ttm'] / y['exp_ttm_prev'] - 1, 4), 'yoy')
 eq(t.ttm_yoy(series[:6], '202512'), None, '표본 부족이면 None')
+imp = [{'ym': f'{2024 + (i // 12)}{i % 12 + 1:02d}', 'exp_usd': 0, 'imp_usd': 10 + i} for i in range(24)]
+yi = t.ttm_yoy(imp, '202512')
+eq((yi['yoy'], yi['imp_ttm'], round(yi['imp_yoy'], 4)), (None, sum(10 + i for i in range(12, 24)), round(sum(10 + i for i in range(12, 24)) / sum(10 + i for i in range(12)) - 1, 4)), '수입 종목: exp yoy None, imp yoy 계산')
 eq(t.windows('202408', '202608'), [('202408', '202507'), ('202508', '202607'), ('202608', '202608')], '25개월 -> 12개월 창 3개')
 eq(t.windows('202601', '202603'), [('202601', '202603')], '1년 이내면 창 하나')
 

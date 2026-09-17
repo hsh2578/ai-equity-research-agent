@@ -441,6 +441,7 @@ critic 정정 후에도 정규 섹션을 수정했으면 **alias를 반드시 �
 - **preflight C6 (PER 시점 키워드)**: `\bPER\s*\d` 패턴이 ±30자 내 시점 키워드(`후행/TTM/Forward/12M/연간/업종/2026E/5Y/Target/평균/컨센/실측`) 없으면 FAIL. **`선행`은 키워드 목록에 없다 → "선행 PER"는 반드시 "Forward PER"로** 쓸 것. 표 헤더·소제목의 "PER 5" 같은 표기도 "후행 PER 5"로.
 - **preflight C7 (forward_per 정합)**: `price.forward_per` 값이 본문에 **문자 그대로** 등장해야 함. 본문이 "15.9"면 `forward_per`도 `15.9`(14.48→14.5처럼 반올림 일치)로 맞출 것.
 - **verify_numbers B6 (순현금)**: `financial_summary.json`의 `net_debt`(현금성+단기금융자산−차입금, 포괄 기준)를 본다. FnGuide `cash`(현금성만)와 다르다. s06에 **financial_summary 기준 순현금을 "약 N조"로 `순현금` 단어 근처**에 명시(예: "순현금 약 4,982억(약 0.5조)").
+- **`financial_summary.json` 의 `financials['{올해}']` 열은 실측과 추정이 섞여 있다** -- 매출·순이익은 반기(YTD) 실측, `ocf`·`capex`·`net_debt`·안정성 비율은 Wisereport **연간 컨센(2026E)**. `_sources.cashflow` 에 "5년 + 2026E" 라고 적혀 있다. 이 열을 "상반기 실측"으로 읽으면 CJ프레시웨이 -ta 초판처럼 영업현금흐름 부호가 뒤집힌다(+1,233 vs 실제 -363). 반기 현금흐름은 `_dart_FULL_반기보고서` 현금흐름표에서 직접 읽는다.
 - **`financial_summary.py` print_summary TypeError(NoneType avg_eps_forward)는 무해** — JSON은 크래시 직전 이미 dump됨. 무시하고 진행.
 - **데이터 폴더명 == `meta.stock_name`**: `generate_all.py`는 데이터 경로를 `meta.stock_name`으로 유도하고, verify_*는 CLI 인자를 쓴다. 둘이 다르면(예: stock_name "와이지엔터테인먼트" vs 폴더 `data/와이지엔터/`) generate_all 내부 Peer/밴드 교차검증이 조용히 우회되어 거짓 WARN. 폴더명을 meta.stock_name과 맞추거나 데이터 복사.
 - **KIS_BASE_URL 모의(`openapivts:29443`)라도 `get_current_price`가 실측 PER/PBR/EPS를 반환할 때가 있다** — CLAUDE.md 상단 "모의는 0 반환" 경고가 항상 참은 아님. 수집 직후 1종목 테스트로 0 여부 실제 확인 후 판단.

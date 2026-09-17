@@ -229,6 +229,14 @@ LS = cl.build_ledger(FS, MARKET, ASO)
 near(one(LS, 'sotp_value_per_share_base')['value'], 1130e8 / 1_000_000, 'SOTP base 손계산')
 near(one(LS, 'sotp_value_per_share_bear')['value'], (1000 + 200 - 500) * 1e8 / 1_000_000, 'SOTP bear: 비상장·옵션 0')
 near(one(LS, 'sotp_upside_base')['value'], 113000 / 10000 - 1, 'SOTP upside')
+# PER 시나리오: eps x per, 확률가중 (assumptions.per_scenarios / weights)
+APS = {**ASSUME, 'per_scenarios': {'bear': {'eps': 1000, 'per': 5}, 'base': {'eps': 1000, 'per': 8}, 'bull': {'eps': 1200, 'per': 10}},
+       'weights': {'bear': 0.3, 'base': 0.5, 'bull': 0.2}}
+LP = cl.build_ledger(FS, MARKET, APS)
+near(one(LP, 'per_value_base')['value'], 8000, 'PER base = eps x per')
+near(one(LP, 'per_upside_bull')['value'], 12000 / 10000 - 1, 'PER bull upside')
+near(one(LP, 'per_expected_value')['value'], 0.3 * 5000 + 0.5 * 8000 + 0.2 * 12000, 'PER 확률가중')
+eq(one(cl.build_ledger(FS, MARKET, {**ASSUME, 'per_scenarios': {'x': {'eps': None, 'per': 5}}}), 'per_value_x')['status'] != 'ok', True, 'eps 없으면 실패 사유')
 # 시나리오별 EBITDA override + 확률가중
 ASO2 = {**ASO, 'sotp': {**ASO['sotp'], 'scenarios': {**ASO['sotp']['scenarios'], 'ttm': {'multiple': 10, 'option_prob': 0, 'unlisted': False, 'ebitda_annual': 60}},
         'weights': {'base': 0.5, 'ttm': 0.5}}}
@@ -330,7 +338,7 @@ eq([(r['name'], r['metric'], r['result']) for r in rv],
 rp = cl.check_sections({'s': 'ROE 5개년 평균 14.8%로 높다.'}, LEDGER_V)
 eq([(r['text_value'], r['result']) for r in rp], [(14.8, 'PASS')], '5개년 의 5 는 건너뛴다')
 rq = cl.check_sections({'s': 'ROE 3분기 누적 15.2%'}, LEDGER_V)
-eq([(r['text_value'], r['result']) for r in rq], [(15.2, 'FAIL')], '3분기 의 3 도 건너뛴다')
+eq([(r['text_value'], r['result']) for r in rq], [(15.2, 'WARN')], '3분기 의 3 도 건너뛰고, 분기 표기라 FY 장부값과 다르면 WARN')
 r99 = cl.check_sections({'s': 'VaR(99%) -9.0% 수준이다.'}, LEDGER_V)
 eq([(r['result'], r['reason'], r['var_level']) for r in r99],
    [('WARN', '장부는 95% VaR 만 있음 (본문 99%)', '99')], '99% VaR 는 95% 장부값과 비교하지 않음')
@@ -352,6 +360,22 @@ eq(hv('9월 20일 기준 VaR -9.0%'), [(1, 'PASS')], '날짜(9월 20일)는 보�
 r10 = cl.check_sections({'s': 'VaR 10일 -15%'}, LEDGER_V)
 eq([(r['result'], r['reason']) for r in r10], [('WARN', '장부에 해당 기간 VaR 없음 (본문 10일, 장부는 1일/20일)')],
    '다른 기간은 WARN')
+
+# 경계·단위·기준선·범위 (CJ프레시웨이 실측: 54건 중 진짜 결함은 2건, 나머지는 반기·부문·기준선·타사 수치였다)
+ck = lambda t, L=LEDGER_V: [(r['metric'], r['text_value'], r['result']) for r in cl.check_sections({'s': t}, L)]  # noqa: E731
+eq(ck('순부채비율 220%다.'), [], '순부채비율은 부채비율이 아니다 (이름 앞 경계)')
+eq(ck('사채관리계약은 부채비율 500% 이하 유지가 조건이다.', LEDGER_C), [], '500% 이하 는 기준선이지 값이 아니다')
+eq(ck('급식 영업이익률 5%대 복귀'), [], '5%대 도 기준선')
+eq(ck('ROE를 그대로 넣었고 BPS에는 신종자본증권 600억원이 있다.'), [], '600억 은 지표값이 아니다')
+eq(ck('ROE가 낮다. 유통 75%인 회사다.'), [], '문장이 끝나면 다음 문장의 숫자는 보지 않는다')
+eq(ck('| ROE | 14.8% |'), [('ROE', 14.8, 'PASS')], '표: 이름만 있는 셀은 다음 셀의 값을 본다')
+eq(ck("| '부채비율 300% 돌파' 분석 | +7.3% |", LEDGER_C), [], '표: 셀 안에 다른 글이 있으면 다음 셀로 넘어가지 않는다')
+eq(ck('ROE ' + '가' * 27 + ' 11.1%'), [('ROE', 11.1, 'FAIL')], '30자 경계에서 숫자가 잘리지 않는다 (11 이 아니라 11.1)')
+eq(ck('VaR(99%) -9.0% 수준이다.')[0][2], 'WARN', '"-9.0% 수준" 은 값이다 (수준은 기준선이 아님)')
+eq([(r['result'], r['reason']) for r in cl.check_sections({'s': '상반기 ROE 5.7%'}, LEDGER_V)],
+   [('WARN', '장부 밖 기간·범위 표기 (작성자 출처 확인)')], '반기·부문·타사 표기는 FAIL 대신 WARN')
+eq([r['result'] for r in cl.check_sections({'s': '2022년 ROE 12.9%'}, LEDGER_V)], ['WARN'], '장부에 없는 연도는 WARN')
+eq([r['result'] for r in cl.check_sections({'s': '2025년 ROE 12.9%'}, LEDGER_V)], ['FAIL'], '장부에 있는 연도의 다른 값은 FAIL')
 
 print('=' * 66)
 if _failed:

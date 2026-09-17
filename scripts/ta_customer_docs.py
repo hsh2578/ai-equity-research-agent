@@ -73,9 +73,12 @@ def kr_docs(entry, max_filings):
     bgn = end - timedelta(days=400)
     key = os.environ.get('DART_API_KEY')
     docs = []
-    for it in fetch_list(corp, bgn.strftime('%Y%m%d'), end.strftime('%Y%m%d'), key):
+    items = fetch_list(corp, bgn.strftime('%Y%m%d'), end.strftime('%Y%m%d'), key)
+    # 정기보고서를 먼저 -- '기업설명회(IR)개최(안내공시)' 는 안내문뿐이라 뒤로 보낸다(현대그린푸드 실측: 안내공시 2건만 잡혀 empty)
+    items.sort(key=lambda it: 0 if any(k in it.get('report_nm', '') for k in ('분기보고서', '반기보고서', '사업보고서')) else 1)
+    for it in items:
         nm = it.get('report_nm', '')
-        if not any(k in nm for k in ('기업설명회', '분기보고서', '반기보고서')):
+        if not any(k in nm for k in ('기업설명회', '분기보고서', '반기보고서', '사업보고서')):
             continue
         for _fn, html in (download_report_document(it['rcept_no']) or {}).items():
             docs.append((f"DART {nm} {it.get('rcept_dt', '')}", html_to_text(html)))

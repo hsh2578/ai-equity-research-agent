@@ -15,7 +15,7 @@ import sys
 if (getattr(sys.stdout, 'encoding', '') or '').lower().replace('-', '') != 'utf8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-SRC = re.compile(r'협회|통계청|관세청|USITC|SEMI|SNE|TrendForce|트렌드포스|IDC|Omdia|WSTS|10-K|10-Q|컨퍼런스콜|IR 자료|기업설명회|산업부|농림|식약처')
+SRC = re.compile(r'협회|통계청|관세청|공정거래위원회|공정위|USITC|SEMI|SNE|TrendForce|트렌드포스|IDC|Omdia|WSTS|10-K|10-Q|컨퍼런스콜|IR 자료|기업설명회|반기보고서|분기보고서|사업보고서|산업부|농림|식약처|국방부|산업리포트')
 NEWS = re.compile(r'보도|기사')
 MARGIN = re.compile(r'^> \*\*한 줄:\*\*\s*(.+)$', re.M)
 NUM = re.compile(r'\d[\d,.]*\s*(억원|%|배|원)')
@@ -26,7 +26,11 @@ VAL = re.compile(r'SOTP|시나리오|DCF|Bull|Bear')
 
 def _body(a):
     s = a['sections']
-    return {k: s.get(k, '') for k in a['meta']['section_order'] if k in s}
+    body = {k: s.get(k, '') for k in a['meta']['section_order'] if k in s}
+    # 요약 끝의 용어 박스(#### 용어)는 부록이라 분량 분모에서 뺀다 (가독성 규칙과 산업 20% 가 서로를 밀지 않게)
+    if 's01_opinion_thesis' in body:
+        body['s01_opinion_thesis'] = body['s01_opinion_thesis'].split('#### 용어')[0]
+    return body
 
 
 def outside_ratio(text, name):
