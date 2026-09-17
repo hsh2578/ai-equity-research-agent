@@ -14,7 +14,7 @@
 
 사용:
     python scripts/ta_collect_news.py {종목명} [--code 036810] [--days 365]
-        [--max-pages 20] [--no-telegram]
+        [--max-pages 2000] [--no-telegram]
 """
 import argparse
 import calendar
@@ -395,7 +395,7 @@ def main(argv=None):
     ap.add_argument('stock')
     ap.add_argument('--code', default=None)
     ap.add_argument('--days', type=int, default=365)
-    ap.add_argument('--max-pages', type=int, default=20)
+    ap.add_argument('--max-pages', type=int, default=2000)  # cutoff(--days) 가 멈추게 둔다. 20 이면 대형주는 10일치(HD현대중공업 실측 1,071건=10일)만 받는다
     ap.add_argument('--no-telegram', action='store_true')
     a = ap.parse_args(argv)
 

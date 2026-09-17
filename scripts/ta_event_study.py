@@ -143,7 +143,7 @@ def load_news_events(path):
         if kind == 'reaction':
             reaction_excluded += 1
             continue
-        if kind != 'news':
+        if kind not in ('news', 'window'):
             continue
         dt = _parse_news_dt(it.get('datetime'))
         if dt is None:

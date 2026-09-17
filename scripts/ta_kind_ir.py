@@ -78,7 +78,7 @@ def main(argv=None):
             index.append({'date': r['date'], 'file': r['filename'], 'status': 'failed', 'reason': repr(e)[:150]})
     write_json(os.path.join(out_dir, 'index.json'), {'asof': today.isoformat(), 'code': code, 'items': index})
     ok = sum(1 for i in index if i['status'] == 'ok')
-    manifest_update(stock, 'kind_ir', 'ok' if ok else ('empty' if not rows else 'failed'), found=len(rows), ok=ok)
+    manifest_update(stock, 'kind_ir', 'ok' if ok else ('skipped' if not rows else 'failed'), found=len(rows), ok=ok)
     for i in index:
         print(f"  {i['date']} {i['file']} {i['status']} {i.get('pages', '')}p {i.get('chars', '')}자 {i.get('reason', '')}")
     print(f"[{'OK' if ok else 'FAIL'}] kind_ir: {ok}/{len(rows)} PDF -> ta/ir_materials/")

@@ -763,7 +763,7 @@ _PERIOD_AFTER = re.compile(r'\s*(개년|년|분기|개월|영업일|거래일|�
 _THRESHOLD_AFTER = re.compile(r'\s*(이하|미만|이상|초과|돌파|대(?!비)|포인트|p\b|를 넘|을 넘|넘|밑돌)')  # "500% 이하", "5%대" 는 기준선이지 값이 아니다
 _SENTENCE_END = re.compile(r'\.(?=\s|$)|\n\s*\n')   # 문장 끝 / 문단 끝
 _CELL_TEXT = re.compile(r'[0-9A-Za-z가-힣%]')
-_SCOPE = re.compile(r'상반기|하반기|반기|[1-4]\s*분기|[1-4]Q|[12]H\s*\d\d|누적|연환산|부문|사업부|별도|재분류|IR|타사|경쟁사|vs\.?|대비|컨센|가정|시나리오|FnGuide|와이즈')
+_SCOPE = re.compile(r'상반기|하반기|반기|분기|[1-4]\s*분기|[1-4]Q|[12]H\s*\d\d|누적|연환산|부문|사업부|별도|재분류|IR|타사|경쟁사|vs\.?|대비|컨센|가정|시나리오|요구|영구|역산|잔여가치|수렴|베타|자기자본비용|ke|FnGuide|와이즈')
 _YEAR = re.compile(r'(?<!\d)(20\d\d)(?!\d)')
 SCOPE_BEFORE = 20
 _VAR_HORIZON = re.compile(r'(?<![\d월])(?<!월 )(\d+)\s*(?:영업일|거래일|일)(?!간)')  # '9월 20일' 같은 날짜는 제외
