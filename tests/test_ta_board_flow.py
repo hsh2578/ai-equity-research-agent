@@ -14,10 +14,13 @@ import io
 import json
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 
-import ta_board_flow as tbf                              # noqa: E402
+import requests                                           # noqa: E402
+import ta_board_flow as tbf                               # noqa: E402
+import ta_common as tc                                    # noqa: E402
 
 if getattr(sys.stdout, 'encoding', '') != 'utf-8':
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -341,6 +344,95 @@ eq(flow_none['shares_outstanding'], None, '4단계 모두 실패하면 shares_ou
 eq(flow_none['shares_source'], None, '소스도 null')
 eq(flow_none['pct_of_shares'], None, '비중도 null')
 ok(flow_none.get('pct_of_shares_reason'), '실패 사유에 시도한 소스가 남는다')
+
+# ==================== 6. collect_flow: KIS 예외 처리 (Fix round 3) ====================
+# 실측 사고(2026-09-17 파일럿, --limit 2000): kis_api.api_get() 이 resp.raise_for_status()
+# 로 requests.exceptions.HTTPError 를 그대로 올리는데(모의서버 500), collect_flow 가
+# 이를 안 잡아 스크립트가 죽었다. board.json 은 저장됐지만 flow.json 은 갱신되지 않고
+# 조용히 stale 로 남았다(무기록 실패). get_trend/get_price 둘 다에서 재현하고 고친다.
+
+
+class _FakeResp500:
+    status_code = 500
+
+
+class _FakeResp404:
+    status_code = 404
+
+
+def get_trend_http500(code, days=20):
+    err = requests.exceptions.HTTPError('500 Server Error for url: .../inquire-investor')
+    err.response = _FakeResp500()
+    raise err
+
+
+def get_price_http500(code):
+    err = requests.exceptions.HTTPError('500 Server Error for url: .../inquire-price')
+    err.response = _FakeResp500()
+    raise err
+
+
+def get_trend_conn_err(code, days=20):
+    raise requests.exceptions.ConnectionError('연결 실패')
+
+
+def get_trend_timeout(code, days=20):
+    raise requests.exceptions.Timeout('응답 지연')
+
+
+def get_trend_http404(code, days=20):
+    err = requests.exceptions.HTTPError('404 Not Found')
+    err.response = _FakeResp404()
+    raise err
+
+
+flow_500 = tbf.collect_flow('036810', get_trend=get_trend_http500, get_price=get_price_ok, flow_days=20)
+eq(flow_500['status'], 'failed', 'get_trend 의 HTTPError 500 은 예외를 올리지 않고 failed 로 잡힌다')
+ok('HTTPError' in (flow_500.get('reason') or ''), 'reason 에 예외 타입이 남는다')
+ok('_run_with_real_kis.py' in (flow_500.get('reason') or ''),
+   'HTTP 500 이면 CLAUDE.md v5.18 실전 전환 힌트가 붙는다')
+
+flow_price_500 = tbf.collect_flow('036810', get_trend=get_trend_ok, get_price=get_price_http500, flow_days=20)
+eq(flow_price_500['status'], 'failed', 'get_price 단계의 HTTPError 500 도 failed 로 잡힌다')
+ok('_run_with_real_kis.py' in (flow_price_500.get('reason') or ''), '가격 조회 500 에도 힌트가 붙는다')
+
+flow_conn = tbf.collect_flow('036810', get_trend=get_trend_conn_err, get_price=get_price_ok, flow_days=20)
+eq(flow_conn['status'], 'failed', 'ConnectionError 도 failed 로 잡힌다(일반 예외 캐치 확인)')
+ok('ConnectionError' in (flow_conn.get('reason') or ''), 'reason 에 예외 타입 명시')
+
+flow_timeout = tbf.collect_flow('036810', get_trend=get_trend_timeout, get_price=get_price_ok, flow_days=20)
+eq(flow_timeout['status'], 'failed', 'Timeout 도 failed 로 잡힌다')
+
+flow_404 = tbf.collect_flow('036810', get_trend=get_trend_http404, get_price=get_price_ok, flow_days=20)
+eq(flow_404['status'], 'failed', '404 도 failed 로 잡힌다')
+ok('_run_with_real_kis.py' not in (flow_404.get('reason') or ''), '500 이 아니면 모의 힌트를 붙이지 않는다')
+
+# ---- 통합: board.json 은 저장되고, flow.json 도 (실패 상태로나마) 반드시 저장된다 ----
+# main() 이 하는 두 단계(collect_board -> write, collect_flow -> write)를 그대로 재현해
+# "board 는 있는데 flow 는 stale" 사고가 재발하지 않는지 디스크까지 확인한다.
+with tempfile.TemporaryDirectory() as td:
+    orig_root = tc.PROJECT_ROOT
+    tc.PROJECT_ROOT = td
+    try:
+        board_fetch, _ = _chain_fetch([PAGE1, PAGE2])
+        board_result = tbf.collect_board('036810', limit=100, fetch=board_fetch)
+        tc.write_json(os.path.join(tc.ta_dir('테스트종목'), 'board.json'), board_result)
+
+        flow_result = tbf.collect_flow('036810', '테스트종목', get_trend=get_trend_http500,
+                                       get_price=get_price_ok, flow_days=20)
+        tc.write_json(os.path.join(tc.ta_dir('테스트종목'), 'flow.json'), flow_result)
+        tc.manifest_update('테스트종목', 'flow', 'failed', reason=flow_result.get('reason'))
+
+        board_path = os.path.join(tc.ta_dir('테스트종목'), 'board.json')
+        flow_path = os.path.join(tc.ta_dir('테스트종목'), 'flow.json')
+        eq(os.path.exists(board_path), True, 'board.json 은 정상 저장된다')
+        eq(os.path.exists(flow_path), True,
+           'flow.json 도 failed 상태로나마 반드시 저장된다(예전엔 크래시로 아예 안 써졌다)')
+        eq(tc.read_json(flow_path)['status'], 'failed', '디스크에 저장된 flow.json 도 failed 상태')
+        manifest = tc.read_json(os.path.join(tc.ta_dir('테스트종목'), 'manifest.json'))
+        eq(manifest['steps']['flow']['status'], 'failed', 'manifest 에도 flow failed 가 기록된다')
+    finally:
+        tc.PROJECT_ROOT = orig_root
 
 print('=' * 66)
 if _failed:

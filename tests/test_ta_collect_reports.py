@@ -22,12 +22,23 @@ Fix round 2 (컨트롤러 실측: company/industry 목록 모두 종목 전용 �
   5. sources 에 pages_scanned/oldest_date_seen 기록(트렁케이션 여부와 무관하게).
   6. 페이지 사이 0.3초 지연(주입 가능, 테스트는 delay=0 으로 끈다).
 
+Fix round 3 (실전 파일럿: 키워드 5개로 --no-hankyung 없이 돌렸더니 15분+ 째
+안 끝났고, 같은 리포트가 nv_91252.pdf/hk_648115.pdf 로 바이트까지 동일하게
+두 번 저장됐다):
+  7. 한경 산업 스캔을 키워드마다 하지 않고 category 당 **한 번만** 스캔,
+     로컬에서 키워드 OR 매칭(hankyung_scan). 기업도 같은 함수로 통일.
+  8. 콘텐츠(sha256) 중복 제거 -- 제목이 달라도 바이트가 같으면 네이버를 남기고
+     (처리 순서 무관) 나머지 파일을 지우고 manifest.duplicates 에 기록.
+  9. 제목 정규화에 종목 접두어("{종목명}({코드}) ") 제거 + 반복 구간 접기를
+     title-dedupe 이전에 적용.
+
 실행: python tests/test_ta_collect_reports.py
 """
 import contextlib
 import io
 import os
 import sys
+import types
 import tempfile
 from datetime import date
 
@@ -245,11 +256,12 @@ with tempfile.TemporaryDirectory() as td:
     orig_root = ta.tc.PROJECT_ROOT
     ta.tc.PROJECT_ROOT = td
     try:
-        reports, sources, failures = ta.collect(
+        reports, sources, failures, duplicates, category_only_capped = ta.collect(
             'company', '에프에스티', '036810', 1, None, None, 15, False,
             today=TODAY, naver_fetch=_collect_fetch, naver_download=_collect_download,
             pdf_extract=_collect_extract, naver_delay=0)
 
+        eq(duplicates, [], '중복 없으면 duplicates 는 빈 리스트')
         eq(sources['naver'], {'status': 'ok', 'count': 2, 'pages_scanned': 2,
                                'oldest_date_seen': '2026-09-05'},
            '네이버 목록 2건 확보 + pages_scanned/oldest_date_seen 기록, truncated 키는 없음')
@@ -301,14 +313,14 @@ def _ind_fetch(url, params=None):
 
 
 def _ind_download(url):
-    return b'%PDF-1.4 ...'
+    return b'%PDF-1.4 ' + url.encode()  # url 마다 다른 바이트 -- sha256 dedupe 오인 방지
 
 
 with tempfile.TemporaryDirectory() as td:
     orig_root = ta.tc.PROJECT_ROOT
     ta.tc.PROJECT_ROOT = td
     try:
-        reports, sources, failures = ta.collect(
+        reports, sources, failures, duplicates, category_only_capped = ta.collect(
             'industry', '에프에스티', '036810', 12, '반도체', ['펠리클', 'EUV'], 15, False,
             today=TODAY, naver_fetch=_ind_fetch, naver_download=_ind_download,
             pdf_extract=_collect_extract, naver_delay=0)
@@ -343,7 +355,7 @@ with tempfile.TemporaryDirectory() as td:
     ta.tc.PROJECT_ROOT = td
     try:
         # import 실패
-        reports, sources, failures = ta.collect(
+        reports, sources, failures, duplicates, category_only_capped = ta.collect(
             'company', '에프에스티', '036810', 1, None, None, 15, True,
             today=TODAY, naver_fetch=_collect_fetch, naver_download=_collect_download,
             pdf_extract=_collect_extract, naver_delay=0,
@@ -353,7 +365,7 @@ with tempfile.TemporaryDirectory() as td:
         eq(sources['naver']['status'], 'ok', '한경이 실패해도 네이버는 정상')
 
         # --no-hankyung (use_hankyung=False)
-        reports2, sources2, _ = ta.collect(
+        reports2, sources2, _, _, _ = ta.collect(
             'company', '에프에스티', '036810', 1, None, None, 15, False,
             today=TODAY, naver_fetch=_collect_fetch, naver_download=_collect_download,
             pdf_extract=_collect_extract, naver_delay=0)
@@ -367,12 +379,350 @@ with tempfile.TemporaryDirectory() as td:
     orig_root = ta.tc.PROJECT_ROOT
     ta.tc.PROJECT_ROOT = td
     try:
-        reports3, sources3, failures3 = ta.collect(
+        reports3, sources3, failures3, duplicates3, capped3 = ta.collect(
             'industry', '에프에스티', '036810', 6, None, ['펠리클'], 15, True, today=TODAY)
         eq(sources3['naver'], {'status': 'skipped', 'count': 0}, 'industry-category 없으면 네이버도 skip')
         eq(sources3['hankyung'], {'status': 'skipped', 'count': 0}, 'industry-category 없으면 한경도 skip')
         eq(reports3, [], '수집 결과 없음')
         eq(failures3, [], '실패도 없음(애초에 안 돌았으므로)')
+        eq(duplicates3, [], '중복도 없음')
+        eq(capped3, False, '아무것도 안 돌았으니 카테고리 상한도 적용되지 않는다')
+    finally:
+        ta.tc.PROJECT_ROOT = orig_root
+
+# ==================== _collapse_repeat / _strip_stock_prefix / _norm_title ====================
+eq(ta._collapse_repeat('EUV 펠리클 공급망 EUV 펠리클 공급망'), 'EUV 펠리클 공급망',
+   '단어 시퀀스 전체가 반복되면 최소 반복 단위만 남긴다')
+eq(ta._collapse_repeat('EUV 펠리클 공급망'), 'EUV 펠리클 공급망', '반복이 없으면 그대로')
+eq(ta._strip_stock_prefix('에프에스티(036810) ArF 펠리클 시장 내 독보적 지배력', '에프에스티', '036810'),
+   'ArF 펠리클 시장 내 독보적 지배력', '종목명(코드) 접두어를 뗀다')
+eq(ta._strip_stock_prefix('ArF 펠리클 시장 내 독보적 지배력', '에프에스티', '036810'),
+   'ArF 펠리클 시장 내 독보적 지배력', '접두어가 없으면 그대로')
+eq(ta._norm_title('에프에스티(036810) ArF 펠리클 시장 내 독보적 지배력', '에프에스티', '036810'),
+   ta._norm_title('ArF 펠리클 시장 내 독보적 지배력'),
+   '접두어를 뗀 뒤 정규화하면 접두어 없는 원제목과 같은 키가 된다')
+
+# stock_name/code 를 주면 종목 접두어만 다른 두 제목이 title-dedupe 로도 하나가 된다
+PREFIX_STUBS = [
+    {'id': 'hk_648115', 'source': 'hankyung', 'broker': '유안타증권', 'date': '2026-04-06',
+     'title': '에프에스티(036810) ArF 펠리클 시장 내 독보적 지배력, EUV로 증명할 시간'},
+    {'id': 'nv_91252', 'source': 'naver', 'broker': '유안타증권', 'date': '2026-04-06',
+     'title': 'ArF 펠리클 시장 내 독보적 지배력, EUV로 증명할 시간'},
+]
+dd_prefix = ta.dedupe_reports(PREFIX_STUBS, stock_name='에프에스티', code='036810')
+eq(len(dd_prefix), 1, '종목 접두어만 다르면 title-dedupe 로 하나가 된다(stock_name/code 를 줬을 때)')
+eq(dd_prefix[0]['id'], 'nv_91252', '네이버가 남는다')
+dd_no_prefix_ctx = ta.dedupe_reports(PREFIX_STUBS)
+eq(len(dd_no_prefix_ctx), 2,
+   'stock_name/code 없이는 접두어를 못 떼 둘로 남는다 -- sha256 백업이 필요한 이유')
+
+# ==================== 한경: category 당 한 번만 스캔 (기업 1회, 산업 1회 -- 키워드 5개여도) ====================
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts', 'broker'))
+
+
+class _FakeReport:
+    def __init__(self, date, category, title, publisher, report_idx):
+        self.date, self.category, self.title = date, category, title
+        self.publisher, self.author, self.report_idx = publisher, '', report_idx
+
+    @property
+    def pdf_url(self):
+        return f'http://hk/{self.report_idx}.pdf'
+
+
+def _fake_matches(r, keyword, category):
+    if category and r.category != category:
+        return False
+    if not keyword:
+        return True
+    return keyword in (r.title or '')
+
+
+def _fake_keyword_hit(r, keyword):
+    if not keyword:
+        return True
+    return keyword in (r.title or '')
+
+
+def _make_fake_fbr(pages, scan_counter, pdf_bytes=None, page_budget=10):
+    """pages: list[list[_FakeReport]] (페이지별 응답, 빈 리스트가 나오면 자연 종료).
+    scan_counter['scans'] 에 fr.fetch_range 호출 횟수(= 카테고리 스캔 횟수)를 기록한다.
+    실제 HTML 정규식 파서를 흉내낼 필요 없이 hankyung_scan 이 '스캔을 몇 번 도는지',
+    '조기 종료가 되는지' 만 검증하면 되므로 page_fetcher 가 rows 를 바로 돌려준다."""
+
+    def paged_fetcher(delay, max_pages, fetch=None, parse=None, sleeper=None,
+                       stop_when=None, progress=None):
+        state = {'pages': 0, 'rows': [], 'done': False}
+
+        def _fetch(url):
+            if state['done'] or state['pages'] >= max_pages or state['pages'] >= len(pages):
+                return []
+            rows = pages[state['pages']]
+            state['pages'] += 1
+            state['rows'].extend(rows)
+            if progress:
+                progress(state['pages'], len(state['rows']))
+            if stop_when and stop_when(state['rows']):
+                state['done'] = True
+            return rows
+        return _fetch
+
+    class _FR:
+        @staticmethod
+        def fetch_range(start, end, max_pages=400, page_fetcher=None, progress=None):
+            scan_counter['scans'] = scan_counter.get('scans', 0) + 1
+            collected = []
+            for _ in range(max_pages):
+                rows = page_fetcher('dummy-url')
+                if not rows:
+                    break
+                collected.extend(rows)
+            return collected
+
+        @staticmethod
+        def filter_range(reports, start, end, category=None, drop_daily=True):
+            return [r for r in reports if not category or r.category == category]
+
+    class _FA:
+        @staticmethod
+        def polite_downloader(delay=0.6):
+            if pdf_bytes is not None:
+                return lambda url: pdf_bytes
+            return lambda url: b'%PDF-1.4 ' + url.encode()  # url 마다 달라 우연한 sha256 충돌 방지
+
+    return types.SimpleNamespace(
+        page_budget=lambda months: page_budget,
+        paged_fetcher=paged_fetcher,
+        matches=_fake_matches,
+        keyword_hit=_fake_keyword_hit,
+        pick=lambda reports, keyword, limit: sorted(
+            [r for r in reports if _fake_keyword_hit(r, keyword)],
+            key=lambda r: r.date or '', reverse=True)[:limit],
+        fr=_FR(),
+        fa=_FA(),
+    )
+
+
+HK_PAGES = [
+    [_FakeReport('2026-09-10', '산업', '포토마스크 산업 점검', '한경사', '9001'),
+     _FakeReport('2026-09-09', '산업', 'EUV 노광 공급망 분석', '한경사', '9002')],
+    [_FakeReport('2026-09-08', '산업', '칠러 장비 동향', '한경사', '9003')],
+    [],  # 빈 페이지 -> 자연 종료
+]
+scan_counter = {}
+fake_fbr = _make_fake_fbr(HK_PAGES, scan_counter)
+
+with tempfile.TemporaryDirectory() as td:
+    orig_root = ta.tc.PROJECT_ROOT
+    ta.tc.PROJECT_ROOT = td
+    try:
+        reports, sources, failures, duplicates, category_only_capped = ta.collect(
+            'industry', '에프에스티', '036810', 3, '반도체',
+            ['펠리클', 'EUV', '포토마스크', '칠러', '에스앤에스텍'], 15, True,
+            today=TODAY, naver_fetch=lambda *a, **k: [],
+            pdf_extract=lambda c: ('본문 ' * 300, 3),
+            hankyung_importer=lambda: (fake_fbr, None))
+        eq(scan_counter.get('scans'), 1,
+           '키워드가 5개여도 fr.fetch_range(=한경 목록 스캔)는 category 당 딱 한 번만 호출된다')
+        eq(sources['hankyung']['count'], 3, '3건 모두 다섯 키워드 중 하나 이상과 맞는다')
+        eq(sources['hankyung']['pages_scanned'], 3, '데이터 2페이지 + 빈 페이지 확인 1번 = 3')
+        eq(len(reports), 3, '한경 3건이 최종 리포트로 반영된다(네이버는 0건)')
+        got_ids = {r['id'] for r in reports}
+        eq(got_ids, {'hk_9001', 'hk_9002', 'hk_9003'}, '기대한 3건이 그대로 들어온다')
+    finally:
+        ta.tc.PROJECT_ROOT = orig_root
+
+# ---- 조기 종료: 필요한 매칭 수를 채우면 남은 페이지는 스캔하지 않는다 ----
+HK_PAGES_EARLY = [
+    [_FakeReport('2026-09-10', '기업', '에프에스티 실적 점검', '한경사', '8001')],
+    [_FakeReport('2026-09-05', '기업', '에프에스티 목표가 상향', '한경사', '8002')],
+    [_FakeReport('2026-09-01', '기업', '에프에스티 공급계약', '한경사', '8003')],
+]
+scan_counter_early = {}
+fake_fbr_early = _make_fake_fbr(HK_PAGES_EARLY, scan_counter_early)
+with tempfile.TemporaryDirectory() as td:
+    orig_root = ta.tc.PROJECT_ROOT
+    ta.tc.PROJECT_ROOT = td
+    try:
+        reports, sources, failures, duplicates, category_only_capped = ta.collect(
+            'company', '에프에스티', '036810', 3, None, None, 1, True,
+            today=TODAY, naver_fetch=lambda *a, **k: [],
+            pdf_extract=lambda c: ('본문 ' * 300, 3),
+            hankyung_importer=lambda: (fake_fbr_early, None))
+        eq(sources['hankyung']['pages_scanned'], 1,
+           'limit=1 을 1페이지에서 이미 채우면 나머지 2페이지는 스캔하지 않는다(조기 종료)')
+        eq(sources['hankyung']['count'], 1, '조기 종료로 1건만 확보')
+    finally:
+        ta.tc.PROJECT_ROOT = orig_root
+
+# ==================== sha256 콘텐츠 중복 제거 (제목이 달라도 바이트가 같으면 하나만) ====================
+SAME_BYTES = b'%PDF-1.4 identical content for dedupe test'
+HK_DUP_PAGES = [[_FakeReport('2026-04-07', '기업', '에프에스티, ArF 펠리클 목표주가 48000원 유지',
+                              '유안타증권', '648115')], []]
+scan_counter_dup = {}
+fake_fbr_dup = _make_fake_fbr(HK_DUP_PAGES, scan_counter_dup, pdf_bytes=SAME_BYTES)
+
+
+def _nv_fetch_dup(url, params=None):
+    if url == ta.NAVER_LIST_COMPANY:
+        page = (params or {}).get('page', 1)
+        return [{'itemCode': '036810', 'itemName': '에프에스티', 'researchId': 501,
+                 'title': 'ArF 펠리클 시장 내 독보적 지배력', 'brokerName': '유안타증권',
+                 'writeDate': '2026-04-06'}] if page == 1 else []
+    if url == ta.NAVER_DETAIL_COMPANY.format(rid=501):
+        return {'researchContent': {'attachUrl': 'http://nv/501.pdf', 'opinion': 'Buy', 'goalPrice': 48000}}
+    raise AssertionError(f'예상치 못한 URL: {url}')
+
+
+with tempfile.TemporaryDirectory() as td:
+    orig_root = ta.tc.PROJECT_ROOT
+    ta.tc.PROJECT_ROOT = td
+    try:
+        reports, sources, failures, duplicates, category_only_capped = ta.collect(
+            'company', '에프에스티', '036810', 6, None, None, 15, True,
+            today=TODAY, naver_fetch=_nv_fetch_dup, naver_download=lambda u: SAME_BYTES,
+            pdf_extract=lambda c: ('본문 ' * 300, 3), naver_delay=0,
+            hankyung_importer=lambda: (fake_fbr_dup, None))
+        # 한경 리포트(hk_648115, 2026-04-07)가 네이버(nv_501, 2026-04-06)보다 최신이라
+        # 랭킹상 먼저 처리된다 -- '먼저 저장된 쪽이 이긴다'가 아니라 '네이버가 이긴다'
+        # 는 걸 검증하려면 처리 순서를 일부러 뒤집어야 한다.
+        eq(len(reports), 1, '제목 표현이 달라 title-dedupe 는 못 잡아도 바이트가 같으면 하나만 남는다')
+        eq(reports[0]['id'], 'nv_501', '처리 순서와 무관하게 네이버가 남는다')
+        eq(len(duplicates), 1, '중복 1건 기록')
+        eq(duplicates[0], {'id': 'hk_648115', 'same_as': 'nv_501', 'by': 'sha256'},
+           'duplicates 항목 형식: id/same_as/by')
+
+        out_dir = os.path.join(td, 'data', '에프에스티', 'ta', 'reports', 'company')
+        files = sorted(os.listdir(out_dir))
+        eq([f for f in files if f.startswith('hk_')], [], '중복으로 판정된 한경 파일은 삭제된다')
+        eq('nv_501.pdf' in files, True, '살아남은 네이버 파일은 그대로 있다')
+    finally:
+        ta.tc.PROJECT_ROOT = orig_root
+
+# ==================== _apply_limit: 카테고리매칭 상한 5, 키워드매칭은 무제한 ====================
+# ranked 는 이미 rank_reports() 를 거친 순서(키워드 tier 먼저)라고 가정한다.
+_kw = lambda i: {'id': f'kw{i}', 'match': 'keyword'}       # noqa: E731
+_cat = lambda i: {'id': f'cat{i}', 'match': 'category'}    # noqa: E731
+
+# (a) 카테고리 공급이 상한보다 많고 limit 도 넉넉하면 -- 상한이 진짜 병목이 된다
+ranked_a = [_kw(1), _kw(2)] + [_cat(i) for i in range(1, 11)]
+limited_a, capped_a = ta._apply_limit(ranked_a, 8)
+eq([s['id'] for s in limited_a], ['kw1', 'kw2', 'cat1', 'cat2', 'cat3', 'cat4', 'cat5'],
+   '키워드는 전부, 카테고리는 최대 5개까지만 -- limit(8) 을 다 못 채워도 상한을 넘지 않는다')
+eq(capped_a, True, '카테고리 공급이 상한을 넘어 실제로 걸러냈으므로 capped=True')
+
+# (b) 카테고리매칭이 상한 이내면 안 걸린다
+ranked_b = [_kw(1), _kw(2), _kw(3)] + [_cat(i) for i in range(1, 4)]
+limited_b, capped_b = ta._apply_limit(ranked_b, 10)
+eq(len(limited_b), 6, '카테고리가 3개뿐이면(상한 5 이내) 전부 들어간다')
+eq(capped_b, False, '상한에 걸린 적이 없으면 capped=False')
+
+# (c) 상한과 limit 이 같은 지점에서 동시에 끝나면 capped=False (진짜로 걸러낸 게 없다)
+ranked_c = [_kw(1), _kw(2), _kw(3)] + [_cat(i) for i in range(1, 11)]
+limited_c, capped_c = ta._apply_limit(ranked_c, 8)
+eq(len(limited_c), 8, 'limit 이 8이면 8개까지만')
+eq(capped_c, False, 'limit 자체가 먼저 찼을 뿐 상한이 후보를 걸러내지는 않았다')
+
+# ==================== cleanup_stale: manifest 에 없는 nv_*/hk_* 만 지운다 ====================
+with tempfile.TemporaryDirectory() as td:
+    def _put(fn, content):
+        mode, enc = ('wb', None) if fn.endswith('.pdf') else ('w', 'utf-8')
+        with open(os.path.join(td, fn), mode, **({} if enc is None else {'encoding': enc})) as f:
+            f.write(content if fn.endswith('.pdf') else content)
+
+    _put('nv_1.pdf', b'a')
+    _put('nv_1.txt', 'a')
+    _put('nv_2.pdf', b'b')     # kept_ids 에 없음 -> 잔재
+    _put('nv_2.txt', 'b')
+    _put('hk_3.pdf', b'c')     # kept_ids 에 없음 -> 잔재
+    _put('hk_3.txt', 'c')
+    with open(os.path.join(td, '_manifest.json'), 'w', encoding='utf-8') as f:
+        f.write('{}')
+    with open(os.path.join(td, 'random.txt'), 'w', encoding='utf-8') as f:
+        f.write('x')
+
+    removed = ta.cleanup_stale(td, {'nv_1'})
+    eq(sorted(removed), ['hk_3.pdf', 'hk_3.txt', 'nv_2.pdf', 'nv_2.txt'],
+       'kept_ids 에 없는 nv_*/hk_* .pdf|.txt 만 지운다')
+    eq(sorted(os.listdir(td)), ['_manifest.json', 'nv_1.pdf', 'nv_1.txt', 'random.txt'],
+       '패턴이 안 맞는 파일(_manifest.json, random.txt)과 kept id 파일은 절대 안 건드린다')
+
+    eq(ta.cleanup_stale(os.path.join(td, '없는폴더'), set()), [], '없는 폴더는 조용히 빈 리스트')
+
+# ==================== run_kind: 성공한 실행 끝에 잔재를 지우고 removed_stale 에 기록 ====================
+with tempfile.TemporaryDirectory() as td:
+    orig_root = ta.tc.PROJECT_ROOT
+    ta.tc.PROJECT_ROOT = td
+    orig_ncl, orig_detail, orig_save = ta.naver_company_list, ta.naver_detail, ta.save_report
+    ta.naver_company_list = lambda *a, **k: (
+        [{'itemCode': '036810', 'itemName': '에프에스티', 'researchId': 777,
+          'title': '테스트 리포트', 'brokerName': 'A증권', 'writeDate': '2026-09-10'}],
+        {'truncated': False, 'pages': 1, 'oldest_date_seen': '2026-09-10'})
+    ta.naver_detail = lambda kind, rid, fetch=None: {'attachUrl': 'http://x/777.pdf'}
+
+    def _fake_save(id_, url, out_dir, download=None, extract=None):
+        pdf_path = os.path.join(out_dir, f'{id_}.pdf')
+        txt_path = os.path.join(out_dir, f'{id_}.txt')
+        with open(pdf_path, 'wb') as f:
+            f.write(b'%PDF-fake')
+        with open(txt_path, 'w', encoding='utf-8') as f:
+            f.write('본문')
+        return {'pages': 1, 'chars': 2, 'too_short': True, 'pdf': pdf_path, 'txt': txt_path,
+                'sha256': 'deadbeef'}, None
+    ta.save_report = _fake_save
+    try:
+        stale_dir = ta.reports_dir('에프에스티', 'company')
+        for fn, txt in (('nv_999.pdf', 'stale-pdf'), ('nv_999.txt', 'stale-txt')):
+            with open(os.path.join(stale_dir, fn), 'w', encoding='utf-8') as f:
+                f.write(txt)
+
+        manifest = ta.run_kind('company', '에프에스티', '036810', 1, None, None, 15, False, today=TODAY)
+
+        eq(manifest['removed_stale'], ['nv_999.pdf', 'nv_999.txt'],
+           '이번 manifest.reports 에 없는 잔재(다른 --months 로 예전에 받은 nv_999) 를 지우고 기록한다')
+        eq(os.path.exists(os.path.join(stale_dir, 'nv_999.pdf')), False, '실제로 파일이 지워진다')
+        eq(os.path.exists(os.path.join(stale_dir, 'nv_777.pdf')), True, '이번에 받은 파일은 그대로 남는다')
+    finally:
+        ta.naver_company_list, ta.naver_detail, ta.save_report = orig_ncl, orig_detail, orig_save
+        ta.tc.PROJECT_ROOT = orig_root
+
+# ---- 네이버가 통째로 실패하면 잔재를 지우지 않는다(일시 실패가 데이터를 파괴하면 안 된다) ----
+with tempfile.TemporaryDirectory() as td:
+    orig_root = ta.tc.PROJECT_ROOT
+    ta.tc.PROJECT_ROOT = td
+    orig_ncl = ta.naver_company_list
+
+    def _raise(*a, **k):
+        raise RuntimeError('네트워크 끊김')
+    ta.naver_company_list = _raise
+    try:
+        stale_dir = ta.reports_dir('에프에스티', 'company')
+        with open(os.path.join(stale_dir, 'nv_999.pdf'), 'w', encoding='utf-8') as f:
+            f.write('stale')
+
+        manifest = ta.run_kind('company', '에프에스티', '036810', 1, None, None, 15, False, today=TODAY)
+
+        eq(manifest['sources']['naver']['status'], 'failed', '네이버가 실패로 기록된다')
+        eq(manifest['removed_stale'], [], '네이버 실패 시 잔재를 지우지 않는다')
+        eq(os.path.exists(os.path.join(stale_dir, 'nv_999.pdf')), True, '파일이 그대로 남아 있다')
+    finally:
+        ta.naver_company_list = orig_ncl
+        ta.tc.PROJECT_ROOT = orig_root
+
+# ---- industry-category 없이 skip 되면 잔재를 지우지 않는다 ----
+with tempfile.TemporaryDirectory() as td:
+    orig_root = ta.tc.PROJECT_ROOT
+    ta.tc.PROJECT_ROOT = td
+    try:
+        stale_dir = ta.reports_dir('에프에스티', 'industry')
+        with open(os.path.join(stale_dir, 'nv_999.pdf'), 'w', encoding='utf-8') as f:
+            f.write('stale')
+
+        manifest = ta.run_kind('industry', '에프에스티', '036810', 6, None, ['펠리클'], 15, False,
+                                today=TODAY)
+
+        eq(manifest['removed_stale'], [], 'industry-category 없이 skip 되면 잔재를 지우지 않는다')
+        eq(os.path.exists(os.path.join(stale_dir, 'nv_999.pdf')), True, '파일이 그대로 남아 있다')
     finally:
         ta.tc.PROJECT_ROOT = orig_root
 

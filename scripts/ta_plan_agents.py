@@ -31,7 +31,7 @@ ROLE_FILES = {
     ],
     'fundamentals': [
         'ta/dart/business.txt', 'ta/dart/risk_mgmt.txt', 'ta/dart/notes_selected.txt',
-        'ta/dart/mdna.txt', 'ta/dart_diff.json', '_dart_quarterly.json', '_fnguide.json',
+        'ta/dart/mdna.txt', 'ta/dart_diff_highlights.json', '_dart_quarterly.json', '_fnguide.json',
         'financial_summary.json', '_drivers.md', '_evidence_scan.json',
     ],
     'macro': [
@@ -104,10 +104,17 @@ def _split_lines_by_size(lines, max_chars):
     return chunks
 
 
+TINY_REMAINDER_UNDER = 10000    # 이보다 작은 마지막 조각은 앞 호출에 얹는다
+TINY_REMAINDER_OVER_ALLOW = 10000  # 그렇게 얹었을 때 max_chars 를 이만큼까지는 넘겨도 된다
+
+
 def _pack_files(stock, files, max_chars):
     """존재하는 파일 목록(순서대로)을 max_chars 이하 그룹으로 채운다.
-    반환: [(items, chars), ...]. items 원소는
-      {'file':rel,'chars':n} 또는 {'file':rel,'lines':[s,e],'chars':n}."""
+    반환: (groups, tiny_merged). groups 는 [(items, chars), ...]. items 원소는
+      {'file':rel,'chars':n} 또는 {'file':rel,'lines':[s,e],'chars':n}.
+    마지막 조각이 TINY_REMAINDER_UNDER 자 미만이면(호출 하나가 그것만 담는 낭비를 막기
+    위해) 직전 호출에 붙인다 -- 단, 합계가 max_chars + TINY_REMAINDER_OVER_ALLOW 를
+    넘지 않을 때만."""
     groups = []
     current, current_chars = [], 0
 
@@ -134,14 +141,27 @@ def _pack_files(stock, files, max_chars):
                 current.append({'file': rel, 'lines': [start, end], 'chars': chars})
                 current_chars += chars
     _flush()
-    return groups
+
+    tiny_merged = False
+    if len(groups) >= 2:
+        last_items, last_chars = groups[-1]
+        if last_chars < TINY_REMAINDER_UNDER:
+            prev_items, prev_chars = groups[-2]
+            if prev_chars + last_chars <= max_chars + TINY_REMAINDER_OVER_ALLOW:
+                groups[-2:] = [(prev_items + last_items, prev_chars + last_chars)]
+                tiny_merged = True
+    return groups, tiny_merged
 
 
-def _finalize_calls(role, groups, merge_reason=None, missing_inputs=None):
+def _finalize_calls(role, groups, merge_reason=None, missing_inputs=None, tiny_merged=False):
     n = len(groups)
     calls = []
     for i, (items, chars) in enumerate(groups, start=1):
-        if n == 1:
+        is_last = (i == n)
+        if is_last and tiny_merged:
+            call_id = role if n == 1 else f'{role}#{i}'
+            reason = '잔여 소량 병합'
+        elif n == 1:
             call_id = role
             reason = merge_reason or '단일'
         else:
@@ -164,11 +184,6 @@ def build_plan(stock, max_chars=DEFAULT_MAX_CHARS, merge_under=DEFAULT_MERGE_UND
     for role, (manifest_rel, extra_rel) in REPORT_ROLES.items():
         role_files[role], role_missing[role] = _report_inputs(stock, manifest_rel, extra_rel)
 
-    warnings = []
-    for role, missing in role_missing.items():
-        for m in missing:
-            warnings.append({'role': role, 'file': m['file'], 'reason': m['reason']})
-
     special_skip_reasons = {}
     if not _exists(stock, 'ta/news_relevant.json') and _exists(stock, 'ta/news.json'):
         # ta_collect_news 는 news.json(원본) 다음 news_relevant.json(관련 항목만)을 만든다.
@@ -176,14 +191,28 @@ def build_plan(stock, max_chars=DEFAULT_MAX_CHARS, merge_under=DEFAULT_MERGE_UND
         role_files['news'] = []
         special_skip_reasons['news'] = 'news_relevant.json 없음 (ta_collect_news 재실행 필요)'
 
+    if not _exists(stock, 'ta/dart_diff_highlights.json') and _exists(stock, 'ta/dart_diff.json'):
+        # ta_dart_diff 는 전문(dart_diff.json) 다음 하이라이트본(dart_diff_highlights.json)을
+        # 만든다. 하이라이트본이 없으면 전문으로 조용히 대체하지 않고(전문은 grep 용으로만
+        # 남긴다) 그 입력만 빼고 경고를 남긴다 -- fundamentals 역할 자체는 계속 돈다.
+        role_missing.setdefault('fundamentals', []).append({
+            'file': 'ta/dart_diff_highlights.json',
+            'reason': 'dart_diff_highlights.json 없음 (ta_dart_diff 재실행 필요)',
+        })
+
+    warnings = []
+    for role, missing in role_missing.items():
+        for m in missing:
+            warnings.append({'role': role, 'file': m['file'], 'reason': m['reason']})
+
     merged = False
-    merged_groups = []
+    merged_groups, merged_tiny = [], False
     merged_missing = []
     if role_files['sellside'] and role_files['industry']:
         combined = role_files['sellside'] + role_files['industry']
         if _sum_chars(stock, combined) < merge_under:
             merged = True
-            merged_groups = _pack_files(stock, combined, max_chars)
+            merged_groups, merged_tiny = _pack_files(stock, combined, max_chars)
             merged_missing = role_missing['sellside'] + role_missing['industry']
 
     calls, skipped = [], []
@@ -192,14 +221,16 @@ def build_plan(stock, max_chars=DEFAULT_MAX_CHARS, merge_under=DEFAULT_MERGE_UND
             continue
         if role == 'sellside' and merged:
             calls.extend(_finalize_calls('sellside+industry', merged_groups,
-                                          merge_reason='자료 적음으로 병합', missing_inputs=merged_missing))
+                                          merge_reason='자료 적음으로 병합', missing_inputs=merged_missing,
+                                          tiny_merged=merged_tiny))
             continue
         files = role_files[role]
         if not files:
             skipped.append({'role': role, 'reason': special_skip_reasons.get(role, '입력 파일 없음')})
             continue
-        calls.extend(_finalize_calls(role, _pack_files(stock, files, max_chars),
-                                      missing_inputs=role_missing.get(role)))
+        groups, tiny_merged = _pack_files(stock, files, max_chars)
+        calls.extend(_finalize_calls(role, groups, missing_inputs=role_missing.get(role),
+                                      tiny_merged=tiny_merged))
 
     total_chars = sum(c['chars'] for c in calls)
     return {

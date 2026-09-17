@@ -82,11 +82,12 @@ with tempfile.TemporaryDirectory() as td:
     tc.PROJECT_ROOT = td
     try:
         stock = '분할종목'
-        # 각 60자, max_chars=100 -> 2개씩 못 들어가므로 파일당 1개 호출 근처가 나온다
-        _write(td, stock, 'ta/dart/business.txt', 'A' * 60)
-        _write(td, stock, 'ta/dart/risk_mgmt.txt', 'B' * 60)
-        _write(td, stock, 'ta/dart/notes_selected.txt', 'C' * 60)
-        plan = pa.build_plan(stock, max_chars=100, merge_under=40000)
+        # 각 60000자(잔여-소량-병합 문턱 10000 을 넘도록), max_chars=100000
+        # -> 2개씩 못 들어가므로 파일당 1개 호출 근처가 나온다
+        _write(td, stock, 'ta/dart/business.txt', 'A' * 60000)
+        _write(td, stock, 'ta/dart/risk_mgmt.txt', 'B' * 60000)
+        _write(td, stock, 'ta/dart/notes_selected.txt', 'C' * 60000)
+        plan = pa.build_plan(stock, max_chars=100000, merge_under=40000)
 
         fund_calls = sorted((c for c in plan['calls'] if c['role'].startswith('fundamentals')),
                              key=lambda c: c['call_id'])
@@ -100,7 +101,7 @@ with tempfile.TemporaryDirectory() as td:
                 seen_files.append(it['file'])
         eq(seen_files, ['ta/dart/business.txt', 'ta/dart/risk_mgmt.txt', 'ta/dart/notes_selected.txt'],
            '분할되어도 파일 순서는 원래 그대로')
-        eq(all(c['chars'] <= 100 for c in fund_calls), True, '각 호출은 max_chars 이하')
+        eq(all(c['chars'] <= 100000 for c in fund_calls), True, '각 호출은 max_chars 이하')
     finally:
         tc.PROJECT_ROOT = orig
 
@@ -303,6 +304,91 @@ with tempfile.TemporaryDirectory() as td:
             {'role': 'industry', 'file': 'ta/reports/industry/nv_missing2.txt',
              'reason': 'manifest 에 있으나 파일 없음'},
         ], key=lambda w: w['file']), 'top-level warnings 는 병합 여부와 무관하게 역할별로 남는다')
+    finally:
+        tc.PROJECT_ROOT = orig
+
+
+# ==================== 9. dart_diff_highlights.json 없으면 dart_diff.json 으로 대체하지 않는다 ====================
+with tempfile.TemporaryDirectory() as td:
+    orig = tc.PROJECT_ROOT
+    tc.PROJECT_ROOT = td
+    try:
+        stock = 'diff미완료종목'
+        # 전문(dart_diff.json)만 있고 하이라이트본은 아직 없음. business.txt 는 있어서
+        # fundamentals 역할 자체는 계속 돌아야 한다(뉴스 케이스처럼 통째로 skip 되면 안 됨).
+        _write(td, stock, 'ta/dart/business.txt', '사업내용 본문')
+        _write(td, stock, 'ta/dart_diff.json', '{"changes":[]}')  # 전문 -- grep 용, 입력엔 안 씀
+        plan = pa.build_plan(stock, max_chars=120000, merge_under=40000)
+
+        fund_calls = [c for c in plan['calls'] if c['role'] == 'fundamentals']
+        eq(len(fund_calls), 1, 'fundamentals 역할은 계속 돈다(통째로 skip 안 됨)')
+        files = [it['file'] for it in fund_calls[0]['inputs']]
+        eq('ta/dart_diff.json' in files, False, '전문(dart_diff.json)은 대체 입력으로 안 들어간다')
+        eq('ta/dart_diff_highlights.json' in files, False, '없는 하이라이트본도 당연히 안 들어간다')
+        eq(fund_calls[0].get('missing_inputs'), [
+            {'file': 'ta/dart_diff_highlights.json', 'reason': 'dart_diff_highlights.json 없음 (ta_dart_diff 재실행 필요)'},
+        ], '호출에 missing_inputs 기록')
+        eq({'role': 'fundamentals', 'file': 'ta/dart_diff_highlights.json',
+            'reason': 'dart_diff_highlights.json 없음 (ta_dart_diff 재실행 필요)'} in plan['warnings'], True,
+           'top-level warnings 에도 기록')
+
+        # 하이라이트본이 있으면 정상적으로 입력에 들어가고 경고도 없다(전문 존재 여부 무관)
+        stock2 = 'diff완료종목'
+        _write(td, stock2, 'ta/dart/business.txt', '사업내용 본문')
+        _write(td, stock2, 'ta/dart_diff.json', '{"changes":[]}')
+        _write(td, stock2, 'ta/dart_diff_highlights.json', '{"changes":["A"]}')
+        plan2 = pa.build_plan(stock2, max_chars=120000, merge_under=40000)
+        fund_calls2 = [c for c in plan2['calls'] if c['role'] == 'fundamentals']
+        files2 = [it['file'] for it in fund_calls2[0]['inputs']]
+        eq('ta/dart_diff_highlights.json' in files2, True, '하이라이트본이 있으면 정상 사용')
+        eq('ta/dart_diff.json' in files2, False, '전문은 하이라이트본이 있어도 입력에 안 들어간다')
+        eq(any(w['role'] == 'fundamentals' for w in plan2['warnings']), False, '경고 없음')
+
+        # 둘 다 없으면 이 특수 경고는 안 뜬다(그냥 그 입력 하나가 조용히 빠질 뿐)
+        stock3 = 'diff둘다없음종목'
+        _write(td, stock3, 'ta/dart/business.txt', '사업내용 본문')
+        plan3 = pa.build_plan(stock3, max_chars=120000, merge_under=40000)
+        eq(any(w['role'] == 'fundamentals' for w in plan3['warnings']), False,
+           '전문조차 없으면 재실행 경고를 내지 않는다')
+    finally:
+        tc.PROJECT_ROOT = orig
+
+
+# ==================== 10. 잔여 소량은 이전 호출에 병합 ====================
+with tempfile.TemporaryDirectory() as td:
+    orig = tc.PROJECT_ROOT
+    tc.PROJECT_ROOT = td
+    try:
+        # (a) 마지막 조각이 10000자 미만이면 이전 호출에 얹는다(합계가 max_chars 를 넘어도)
+        stock = '잔여병합종목'
+        _write(td, stock, 'ta/market_data.json', 'A' * 99500)
+        _write(td, stock, 'ta/board.json', 'B' * 999)
+        plan = pa.build_plan(stock, max_chars=100000, merge_under=40000)
+        market_calls = [c for c in plan['calls'] if c['role'].startswith('market')]
+        eq(len(market_calls), 1, '잔여 소량은 별도 호출을 안 만들고 병합된다')
+        eq(market_calls[0]['reason'], '잔여 소량 병합', '병합 사유')
+        eq(market_calls[0]['chars'], 99500 + 999, '병합된 chars 는 두 파일 합')
+        eq([it['file'] for it in market_calls[0]['inputs']], ['ta/market_data.json', 'ta/board.json'],
+           '병합 호출에 두 파일 모두 담김')
+
+        # (b) 마지막 조각이 10000자 이상이면 병합하지 않는다(경계: 정확히 10000 은 병합 안 됨)
+        stock2 = '병합안함종목'
+        _write(td, stock2, 'ta/market_data.json', 'A' * 95000)
+        _write(td, stock2, 'ta/board.json', 'B' * 10000)
+        plan2 = pa.build_plan(stock2, max_chars=100000, merge_under=40000)
+        market_calls2 = sorted((c for c in plan2['calls'] if c['role'].startswith('market')),
+                                key=lambda c: c['call_id'])
+        eq(len(market_calls2), 2, '마지막 조각이 10000자 이상이면 그대로 분할 유지')
+        eq(all(c['reason'].startswith('용량 초과로 분할') for c in market_calls2), True,
+           '병합되지 않으면 일반 분할 사유')
+
+        # (c) 애초에 분할이 없으면(호출 1개) 병합 로직이 끼어들지 않는다
+        stock3 = '단일이라무관종목'
+        _write(td, stock3, 'ta/market_data.json', 'A' * 500)
+        plan3 = pa.build_plan(stock3, max_chars=100000, merge_under=40000)
+        market_calls3 = [c for c in plan3['calls'] if c['role'] == 'market']
+        eq(len(market_calls3), 1, '분할이 없으면 1호출')
+        eq(market_calls3[0]['reason'], '단일', '단일 호출은 병합 사유가 아니라 단일')
     finally:
         tc.PROJECT_ROOT = orig
 

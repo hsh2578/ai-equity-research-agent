@@ -22,6 +22,7 @@
         --industry-category 반도체 --keywords 펠리클,EUV \
         --limit-company 15 --limit-industry 15
 """
+import hashlib
 import io
 import os
 import re
@@ -103,20 +104,50 @@ def age_band(months):
 
 # ==================== 중복 제거 ====================
 
-def _norm_title(t):
-    return re.sub(r'[\s\W_]+', '', t or '')
+def _collapse_repeat(s):
+    """단어 시퀀스가 통째로 반복되면 최소 반복 단위만 남긴다
+    (broker/fetch_list._dedupe_title 과 같은 알고리즘 -- 한경 목록 HTML 파싱
+    단계에서도 한 번 걷어내지만, 그걸 거치지 않는 경로가 있을 수 있어 여기서도
+    방어적으로 한 번 더 한다)."""
+    words = s.split()
+    n = len(words)
+    for p in range(1, n // 2 + 1):
+        if n % p == 0 and all(words[i] == words[i % p] for i in range(n)):
+            return ' '.join(words[:p])
+    return s
+
+
+def _strip_stock_prefix(t, stock_name, code):
+    """한경 기업 리포트 제목은 '{종목명}({코드}) {실제 제목}' 형태로 종목
+    접두어가 붙는데 네이버 제목엔 없다 -- 그대로 두면 같은 리포트인데 제목
+    정규화 키가 달라져 중복 제거를 통과한다(에프에스티 nv_91252/hk_648115
+    실측 사고, 바이트까지 동일한 PDF 가 두 번 저장됐다)."""
+    if not (stock_name and code):
+        return t
+    for prefix in (f'{stock_name}({code})', f'{stock_name}({code}) '):
+        if t.startswith(prefix):
+            return t[len(prefix):].strip()
+    return t
+
+
+def _norm_title(t, stock_name=None, code=None):
+    t = _strip_stock_prefix(t or '', stock_name, code)
+    t = _collapse_repeat(t)
+    return re.sub(r'[\s\W_]+', '', t)
 
 
 def _norm_broker(b):
     return (b or '').strip()
 
 
-def dedupe_reports(stubs):
-    """(증권사정규화, 날짜, 제목정규화) 같으면 하나. 네이버 우선(목표가 필드가 있어서)."""
+def dedupe_reports(stubs, stock_name=None, code=None):
+    """(증권사정규화, 날짜, 제목정규화) 같으면 하나. 네이버 우선(목표가 필드가 있어서).
+    제목 정규화 전에 종목 접두어를 떼고 반복 구간을 접는다(fix round 3)."""
     seen = {}
     order = []
     for s in stubs:
-        key = (_norm_broker(s.get('broker')), s.get('date'), _norm_title(s.get('title')))
+        key = (_norm_broker(s.get('broker')), s.get('date'),
+               _norm_title(s.get('title'), stock_name, code))
         if key not in seen:
             seen[key] = s
             order.append(key)
@@ -268,17 +299,37 @@ def _import_hankyung():
         return None, f'{type(e).__name__}: {e}'
 
 
-def hankyung_list(fbr, keyword, category, months, limit, today):
+def hankyung_scan(fbr, category, months, keywords, limit, today, fetch=None, parse=None):
+    """한경 목록을 category 당 **딱 한 번만** 스캔한다 (fix round 3 -- 키워드마다
+    스캔하면 max_pages(최대 400) x 1.0s x 키워드 수만큼 걸린다. 실측: 키워드 5개
+    파일럿이 15분+ 째 안 끝남). keywords 는 str(기업, 종목명 하나) 또는
+    list(산업, 키워드 OR 매칭) 둘 다 받는다 -- 로컬(클라이언트)에서 매칭한다.
+
+    fetch/parse 는 fbr.paged_fetcher 로 그대로 주입한다(테스트가 네트워크 없이
+    실제 페이징/조기종료 로직을 검증할 수 있게).
+
+    반환: (matched_reports, pages_scanned)."""
+    kws = [keywords] if isinstance(keywords, str) else [k for k in (keywords or []) if k]
     start = today - timedelta(days=months * 31)
     max_pages = fbr.page_budget(months)
+    scanned = {'pages': 0}
+
+    def _match_any(r):
+        return any(fbr.matches(r, kw, category) for kw in kws)
 
     def _need_met(rows):
-        return sum(1 for r in rows if fbr.matches(r, keyword, category)) >= limit
+        return sum(1 for r in rows if _match_any(r)) >= limit
 
-    fetcher = fbr.paged_fetcher(HANKYUNG_PAGE_DELAY, max_pages, stop_when=_need_met)
+    def _progress(pages, _total_rows):
+        scanned['pages'] = pages
+
+    fetcher = fbr.paged_fetcher(HANKYUNG_PAGE_DELAY, max_pages, fetch=fetch, parse=parse,
+                                 stop_when=_need_met, progress=_progress)
     reports = fbr.fr.fetch_range(start, today, max_pages=max_pages, page_fetcher=fetcher)
     scoped = fbr.fr.filter_range(reports, start, today, category=category, drop_daily=True)
-    return fbr.pick(scoped, keyword, limit)
+    matched = [r for r in scoped if any(fbr.keyword_hit(r, kw) for kw in kws)]
+    matched.sort(key=lambda r: r.date or '', reverse=True)
+    return matched[:limit], scanned['pages']
 
 
 def _hankyung_stub(r, match_keyword=None):
@@ -332,7 +383,7 @@ def save_report(id_, url, out_dir, download=None, extract=None):
     with open(txt_path, 'w', encoding='utf-8') as f:
         f.write(text)
     return {'pages': pages, 'chars': len(text), 'too_short': len(text) < TOO_SHORT_CHARS,
-            'pdf': pdf_path, 'txt': txt_path}, None
+            'pdf': pdf_path, 'txt': txt_path, 'sha256': hashlib.sha256(content).hexdigest()}, None
 
 
 # ==================== 오케스트레이션 ====================
@@ -354,15 +405,45 @@ def rank_reports(stubs):
     return ranked
 
 
+CATEGORY_ONLY_CAP = 5
+
+
+def _apply_limit(ranked, limit):
+    """랭킹 순서(관련도 우선)를 지키며 limit 을 채우되, match=='category'(제목에
+    키워드가 하나도 없이 카테고리만 일치)는 최대 CATEGORY_ONLY_CAP 슬롯까지만
+    허용한다 -- fix round 1 랭킹 수정으로 키워드매칭이 우선하게 됐지만, 키워드
+    매칭이 적으면 여전히 카테고리매칭이 limit 대부분을 채워 '반도체 아무거나'가
+    되는 문제가 남는다. 상한을 넘는 카테고리매칭은 건너뛰고 뒤 후보로 자리를
+    채운다(빈 슬롯을 남기지 않는다). 키워드 매칭은 개수 제한이 없다(limit 까지).
+    반환: (limited, category_only_capped: bool -- 실제로 걸러낸 것이 있었는가)."""
+    limited = []
+    cat_count = 0
+    capped = False
+    for s in ranked:
+        if len(limited) >= limit:
+            break
+        if s.get('match') == 'category':
+            if cat_count >= CATEGORY_ONLY_CAP:
+                capped = True
+                continue
+            cat_count += 1
+        limited.append(s)
+    return limited, capped
+
+
 def collect(kind, stock, code, months, category, keywords, limit, use_hankyung,
             today=None, naver_fetch=None, naver_download=None, pdf_extract=None,
-            hankyung_importer=None, naver_delay=NAVER_PAGE_DELAY, naver_sleeper=None):
+            hankyung_importer=None, naver_delay=NAVER_PAGE_DELAY, naver_sleeper=None,
+            hankyung_fetch=None, hankyung_parse=None):
     """kind('company'|'industry') 리포트를 네이버(+한경)에서 모아 저장한다.
 
-    반환: (reports, sources, failures). 저장 경로는 항상
-    data/{stock}/ta/reports/{kind}/ (_broker_reports.json 은 건드리지 않는다).
-    naver_delay/naver_sleeper 는 테스트에서 페이지 간 실제 대기를 끄는 용도
-    (naver_delay=0)이고, 운영 기본값은 0.3초다.
+    반환: (reports, sources, failures, duplicates, category_only_capped). 저장
+    경로는 항상 data/{stock}/ta/reports/{kind}/ (_broker_reports.json 은 건드리지
+    않는다). naver_delay/naver_sleeper 는 테스트에서 페이지 간 실제 대기를 끄는
+    용도(naver_delay=0)이고, 운영 기본값은 0.3초다. hankyung_fetch/hankyung_parse
+    는 fbr.paged_fetcher 로 그대로 주입(테스트가 진짜 스캔 로직을 네트워크 없이
+    검증). category_only_capped 는 _apply_limit() 의 카테고리매칭 상한이 실제로
+    걸렸는지(True) 여부다.
     """
     today = today or tc.now_kst().date()
     industry_skip = kind == 'industry' and not category
@@ -406,25 +487,26 @@ def collect(kind, stock, code, months, category, keywords, limit, use_hankyung,
             sources['hankyung'] = {'status': 'failed', 'reason': err}
         else:
             try:
-                hk = []
                 if kind == 'company':
-                    hk = hankyung_list(fbr, stock, '기업', months, limit, today)
+                    hk, hk_pages = hankyung_scan(fbr, '기업', months, stock, limit, today,
+                                                  fetch=hankyung_fetch, parse=hankyung_parse)
                     stubs.extend(_hankyung_stub(r) for r in hk)
                 else:
-                    for kw in (keywords or []):
-                        batch = hankyung_list(fbr, kw, '산업', months, limit, today)
-                        hk.extend(batch)
-                        stubs.extend(_hankyung_stub(r, match_keyword=kw) for r in batch)
-                sources['hankyung'] = {'status': 'ok', 'count': len(hk)}
+                    hk, hk_pages = hankyung_scan(fbr, '산업', months, keywords or [], limit, today,
+                                                  fetch=hankyung_fetch, parse=hankyung_parse)
+                    for r in hk:
+                        mk = next((kw for kw in (keywords or []) if fbr.keyword_hit(r, kw)), None)
+                        stubs.append(_hankyung_stub(r, match_keyword=mk))
+                sources['hankyung'] = {'status': 'ok', 'count': len(hk), 'pages_scanned': hk_pages}
             except Exception as e:
                 sources['hankyung'] = {'status': 'failed', 'reason': f'{type(e).__name__}: {e}'}
 
-    deduped = dedupe_reports(stubs)
+    deduped = dedupe_reports(stubs, stock_name=stock, code=code)
     ranked = rank_reports(deduped)
-    limited = ranked[:limit]
+    limited, category_only_capped = _apply_limit(ranked, limit)
 
     out_dir = reports_dir(stock, kind)
-    reports, failures = [], []
+    materialized, failures = [], []
     for stub in limited:
         try:
             if stub['source'] == 'naver':
@@ -449,11 +531,39 @@ def collect(kind, stock, code, months, category, keywords, limit, use_hankyung,
         if fail:
             failures.append(fail)
             continue
+        materialized.append((stub, saved))
+
+    # ---- sha256 콘텐츠 중복 제거 (fix round 3) ----
+    # 제목이 달라도 바이트가 같은 PDF 가 두 번 저장되는 사고를 잡는다(에프에스티
+    # 실측: nv_91252.pdf == hk_648115.pdf, 1,038,368 바이트 동일. 한경 제목의
+    # '종목명(코드)' 접두어 때문에 제목 기반 dedupe 를 통과했다). 네이버를 우선
+    # 남기고 -- 처리 순서와 무관하게 -- 나머지를 지운다.
+    duplicates = []
+    kept = []
+    kept_index_by_hash = {}
+    for stub, saved in materialized:
+        h = saved['sha256']
+        if h not in kept_index_by_hash:
+            kept_index_by_hash[h] = len(kept)
+            kept.append((stub, saved))
+            continue
+        idx = kept_index_by_hash[h]
+        existing_stub, existing_saved = kept[idx]
+        if stub['source'] == 'naver' and existing_stub['source'] != 'naver':
+            duplicates.append({'id': existing_stub['id'], 'same_as': stub['id'], 'by': 'sha256'})
+            _remove_saved_files(existing_saved)
+            kept[idx] = (stub, saved)
+        else:
+            duplicates.append({'id': stub['id'], 'same_as': existing_stub['id'], 'by': 'sha256'})
+            _remove_saved_files(saved)
+
+    reports = []
+    base = tc.data_dir(stock)
+    for stub, saved in kept:
         months_old = compute_age_months(stub.get('date'), today)
         # data/{stock}/ 기준 상대경로 -- ta_plan_agents 등 소비자가 다른 ta 입력과
         # 마찬가지로 data/{종목}/ 를 기준으로 경로를 푼다(프로젝트 루트 기준이면
         # 조용히 못 찾는다, 컨트롤러 지적 사항).
-        base = tc.data_dir(stock)
         reports.append({
             'id': stub['id'], 'source': stub['source'], 'broker': stub.get('broker'),
             'date': stub.get('date'), 'title': stub.get('title'),
@@ -467,10 +577,39 @@ def collect(kind, stock, code, months, category, keywords, limit, use_hankyung,
             'txt': os.path.relpath(saved['txt'], base).replace('\\', '/'),
         })
 
-    return reports, sources, failures
+    return reports, sources, failures, duplicates, category_only_capped
 
 
-def _manifest(kind, months, category, keywords, reports, sources, failures):
+def _remove_saved_files(saved):
+    for k in ('pdf', 'txt'):
+        p = saved.get(k)
+        if p and os.path.exists(p):
+            os.remove(p)
+
+
+_STALE_FILE_RE = re.compile(r'^(nv|hk)_[^.]+\.(pdf|txt)$')
+
+
+def cleanup_stale(out_dir, kept_ids):
+    """out_dir 안의 nv_*/hk_* .pdf|.txt 파일 중 이번 manifest.reports(kept_ids)
+    에 없는 것(다른 --months/키워드로 예전에 받은 잔재, 예: nv_42556.* 가
+    --months 3 재실행 후에도 남아 있던 것)을 지운다. 이 패턴에 안 맞는 파일
+    (_manifest.json 등)은 절대 건드리지 않는다. 반환: 지운 파일명 리스트."""
+    removed = []
+    if not os.path.isdir(out_dir):
+        return removed
+    for fn in sorted(os.listdir(out_dir)):
+        if not _STALE_FILE_RE.match(fn):
+            continue
+        stem = fn.rsplit('.', 1)[0]
+        if stem not in kept_ids:
+            os.remove(os.path.join(out_dir, fn))
+            removed.append(fn)
+    return removed
+
+
+def _manifest(kind, months, category, keywords, reports, sources, failures, duplicates,
+               removed_stale, category_only_capped):
     return {
         'kind': kind,
         'collected_at': tc.now_kst().isoformat(),
@@ -478,14 +617,27 @@ def _manifest(kind, months, category, keywords, reports, sources, failures):
         'sources': sources,
         'reports': reports,
         'failures': failures,
+        'duplicates': duplicates,
+        'removed_stale': removed_stale,
+        'category_only_capped': category_only_capped,
     }
 
 
 def run_kind(kind, stock, code, months, category, keywords, limit, use_hankyung, today=None):
-    reports, sources, failures = collect(kind, stock, code, months, category, keywords,
-                                          limit, use_hankyung, today=today)
-    manifest = _manifest(kind, months, category, keywords, reports, sources, failures)
-    tc.write_json(os.path.join(reports_dir(stock, kind), '_manifest.json'), manifest)
+    reports, sources, failures, duplicates, category_only_capped = collect(
+        kind, stock, code, months, category, keywords, limit, use_hankyung, today=today)
+
+    out_dir = reports_dir(stock, kind)
+    # 성공한 실행 끝에만 잔재를 지운다 -- industry-category 없이 skip 된 호출이나
+    # 네이버가 통째로 실패한 호출에서 지우면, 이번에 아무것도 못 받았을 뿐인데
+    # 이전에 잘 받아둔 파일까지 날아간다(일시적 실패가 데이터를 파괴하면 안 된다).
+    skip_cleanup = (kind == 'industry' and not category) or \
+        sources.get('naver', {}).get('status') == 'failed'
+    removed_stale = [] if skip_cleanup else cleanup_stale(out_dir, {r['id'] for r in reports})
+
+    manifest = _manifest(kind, months, category, keywords, reports, sources, failures,
+                          duplicates, removed_stale, category_only_capped)
+    tc.write_json(os.path.join(out_dir, '_manifest.json'), manifest)
 
     if sources.get('naver', {}).get('truncated'):
         print(f"[WARN] {kind} 네이버 목록 절삭 가능성: {sources['naver'].get('reason')}")
@@ -532,15 +684,21 @@ def main(argv=None):
     print(f'  증권사 리포트 수집: {a.stock} ({code})')
     print('=' * 70)
 
+    t0 = time.time()
     m1 = run_kind('company', a.stock, code, a.months, None, None, a.limit_company, use_hankyung)
     print(f"  [기업] 네이버 {m1['sources'].get('naver')} / 한경 {m1['sources'].get('hankyung')}")
-    print(f"         수집 {len(m1['reports'])}건 / 실패 {len(m1['failures'])}건")
+    print(f"         수집 {len(m1['reports'])}건 / 실패 {len(m1['failures'])}건 / "
+          f"중복제거 {len(m1['duplicates'])}건 / 잔재삭제 {len(m1['removed_stale'])}건 / "
+          f"{time.time() - t0:.1f}s")
 
+    t1 = time.time()
     m2 = run_kind('industry', a.stock, code, a.months, a.industry_category, keywords,
                    a.limit_industry, use_hankyung)
     if a.industry_category:
         print(f"  [산업] 네이버 {m2['sources'].get('naver')} / 한경 {m2['sources'].get('hankyung')}")
-        print(f"         수집 {len(m2['reports'])}건 / 실패 {len(m2['failures'])}건")
+        print(f"         수집 {len(m2['reports'])}건 / 실패 {len(m2['failures'])}건 / "
+              f"중복제거 {len(m2['duplicates'])}건 / 잔재삭제 {len(m2['removed_stale'])}건 / "
+              f"카테고리상한적용 {m2['category_only_capped']} / {time.time() - t1:.1f}s")
     else:
         print('  [산업] --industry-category 없음 -- skipped')
 

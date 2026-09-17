@@ -1,0 +1,20 @@
+This directory contains files copied from TradingAgents
+  https://github.com/TauricResearch/TradingAgents
+  commit be952b8eccb49720509af544c6675233bc1f10d0 (2026-09-07)
+  Copyright Tauric Research. Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Files under prompts/ are verbatim copies kept as the reference for the /research-ta
+agent definitions. They are NOT imported or executed by this project.
+
+How this project adapts them (modifications are in separate files, not in these copies):
+- .claude/agents/ta-*.md: role prompts rewritten in Korean for Korean equities research
+  reports (not trading memos). Kept from the original: pre-fetched data instead of free
+  tool calls for evidence, "say so explicitly if data is missing", debate opening rule
+  (opponent_argument_or_opening), Hold-when-balanced rule, structured output fields of
+  ResearchPlan / PortfolioDecision / SentimentReport.
+- Removed: Trader entry/stop-loss/position sizing, US data vendors, LangGraph runtime.
+- Changed: analysts run in parallel as Claude Code subagents; the number of analyst calls
+  is decided by input data size (scripts/ta_plan_agents.py), not fixed at four.
+- scripts/ta_market_data.py re-implements the 13 stockstats indicators used by the
+  original market analyst and the stale-data guard/verified snapshot idea from
+  dataflows/market_data_validator.py and stockstats_utils.py, without copying code.

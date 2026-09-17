@@ -323,6 +323,83 @@ def _get_price_fail(code):
     raise RuntimeError('KIS 모의서버 HTTP 500')
 
 
+# ---------- KRX 일별매매 교차검증 (Task 14, fix round 1) 고정 fixture ----------
+# krx_call 기본값은 None -> tc.krx_http_call(실 네트워크) 이므로, build_market_data 가
+# krx_cross_check 까지 도달하는 모든 호출에는 반드시 가짜 krx_call 을 주입한다(네트워크 금지).
+# fix round 1: krx_cross_check 는 이제 FDR "마지막" 종가가 아니라 KRX 확정거래일(trade_date)
+# **그 날짜**의 FDR 종가를 찾아 비교한다 -- 그래서 기대값도 trade_date 행에서 뽑는다
+# (_OK_DF 는 freq='D' 전체 달력일이라 trade_date 가 항상 인덱스에 있다).
+
+
+def _first_krx_basdd():
+    """krx_call_with_fallback 의 첫 basDd 후보 계산을 그대로 복제(테스트 기대값 산출용,
+    벽시계 시각에 따라 값이 달라지므로 하드코딩하지 않는다)."""
+    from datetime import timedelta as _td
+    n = tc.now_kst()
+    d = n.date()
+    if d.weekday() < 5 and n.hour < 17:
+        d -= _td(days=1)
+    while d.weekday() >= 5:
+        d -= _td(days=1)
+    return d.strftime('%Y%m%d')
+
+
+_KRX_BASDD_TODAY = _first_krx_basdd()
+_KRX_TRADE_DATE = f'{_KRX_BASDD_TODAY[:4]}-{_KRX_BASDD_TODAY[4:6]}-{_KRX_BASDD_TODAY[6:]}'
+_KRX_TRADE_TS = pd.Timestamp(_KRX_TRADE_DATE)
+_FDR_CLOSE_ON_TRADE = float(_OK_DF.loc[_KRX_TRADE_TS, 'Close'])
+_KRX_CLOSE = round(_FDR_CLOSE_ON_TRADE * 1.002, 2)
+
+
+def _krx_call_ok(path, basDd):
+    if path == 'sto/ksq_bydd_trd':
+        return [{'ISU_SRT_CD': '036810', 'TDD_CLSPRC': str(_KRX_CLOSE)}]
+    return []
+
+
+def _krx_call_fail(path, basDd):
+    return []
+
+
+# ---------- krx_cross_check 직접 테스트 (fix round 1) ----------
+
+def _krx_row_ok(path, basDd):
+    if path == 'sto/ksq_bydd_trd':
+        return [{'ISU_SRT_CD': '036810', 'TDD_CLSPRC': '10500'}]
+    return []
+
+
+# (a) 같은 날짜(trade_date) 에 FDR 값이 있으면 "마지막 행"이 아니라 그 날짜 종가로 비교한다.
+_fdr_two_rows = pd.DataFrame(
+    {'Close': [10000.0, 10600.0]},
+    index=[_KRX_TRADE_TS, _KRX_TRADE_TS + pd.Timedelta(days=1)],  # [trade_date 행, 그 다음날(마지막 행, 다른 값)]
+)
+r_same = tm.krx_cross_check('036810', _fdr_two_rows, krx_call=_krx_row_ok)
+eq(r_same['status'], 'ok', '같은 날짜 FDR 값이 있으면 ok')
+eq(r_same['trade_date'], _KRX_TRADE_DATE, 'trade_date 는 KRX 확정 거래일')
+eq(r_same['fdr_date'], _KRX_TRADE_DATE, 'fdr_date 는 trade_date 와 같아야 한다(다른 날 비교 금지, fix round 1)')
+eq(r_same['fdr_close'], 10000.0, 'fdr_close 는 trade_date 행의 종가(마지막 행 10600 이 아니다)')
+eq(r_same['krx_close'], 10500.0, 'krx_close')
+eq(r_same['diff_pct'], round((10500.0 - 10000.0) / 10000.0 * 100, 3), 'diff_pct = (KRX-FDR)/FDR*100')
+
+# (b) FDR 에 trade_date 행이 없으면 failed + 사유에 날짜 명시
+_fdr_no_match = pd.DataFrame({'Close': [9999.0]}, index=[_KRX_TRADE_TS + pd.Timedelta(days=30)])
+r_missing_date = tm.krx_cross_check('036810', _fdr_no_match, krx_call=_krx_row_ok)
+eq(r_missing_date['status'], 'failed', 'FDR 에 trade_date 행이 없으면 failed')
+eq(r_missing_date['reason'], f'FDR 에 {_KRX_TRADE_DATE} 행 없음', '사유에 날짜가 명시된다')
+
+# (c) KRX 응답에 기대 필드(TDD_CLSPRC)가 없으면(스키마 변경 가정) failed + 필드명 명시
+def _krx_row_missing_field(path, basDd):
+    if path == 'sto/ksq_bydd_trd':
+        return [{'ISU_SRT_CD': '036810'}]  # TDD_CLSPRC 없음
+    return []
+
+
+r_missing_field = tm.krx_cross_check('036810', _fdr_two_rows, krx_call=_krx_row_missing_field)
+eq(r_missing_field['status'], 'failed', 'KRX 응답에 기대 필드가 없으면 failed')
+eq('TDD_CLSPRC' in r_missing_field['reason'], True, '사유에 빠진 필드명이 들어간다')
+
+
 r1 = tm.build_market_data('테스트종목', code='036810', reader=_reader_thin, get_price=_get_price_ok)
 eq(r1['status'], 'failed', '250행 미만 -> failed')
 eq(r1['reason'], '표본 부족', '250행 미만 사유')
@@ -331,16 +408,31 @@ r2 = tm.build_market_data('테스트종목', code='036810', reader=_reader_stale
 eq(r2['status'], 'failed', '마지막 행이 10일+ 과거 -> failed')
 eq('stale' in r2['reason'], True, 'stale 사유 문자열 포함')
 
-r3 = tm.build_market_data('테스트종목', code='036810', reader=_reader_ok, get_price=_get_price_fail)
+r3 = tm.build_market_data('테스트종목', code='036810', reader=_reader_ok, get_price=_get_price_fail,
+                           krx_call=_krx_call_ok)
 eq(r3['status'], 'ok', 'KIS 실패해도 전체 status 는 ok (가격/지표는 정상)')
 eq(r3['kis']['status'], 'failed', 'KIS 로더 예외 -> kis.status failed')
 eq('RuntimeError' in r3['kis']['reason'], True, 'kis.reason 에 예외타입 포함')
 
-r4 = tm.build_market_data('테스트종목', code='036810', reader=_reader_ok, get_price=_get_price_ok)
+r3b = tm.build_market_data('테스트종목', code='036810', reader=_reader_ok, get_price=_get_price_ok,
+                            krx_call=_krx_call_fail)
+eq(r3b['status'], 'ok', 'KRX 실패해도 전체 status 는 ok (KIS 와 독립)')
+eq(r3b['krx']['status'], 'failed', 'KRX 응답에 종목코드 없음 -> krx.status failed')
+eq(r3b['krx']['reason'] != '', True, 'krx.reason 에 사유가 남는다')
+
+r4 = tm.build_market_data('테스트종목', code='036810', reader=_reader_ok, get_price=_get_price_ok,
+                           krx_call=_krx_call_ok)
 eq(r4['status'], 'ok', '정상 경로 -> ok')
 eq(r4['code'], '036810', '코드는 6자리로 zfill')
 eq(r4['rows'], 260, '행 수 기록')
 eq(r4['kis']['status'], 'ok', 'KIS 정상 -> ok')
+eq(r4['krx']['status'], 'ok', 'KRX 정상 -> ok')
+eq(r4['krx']['trade_date'], _KRX_TRADE_DATE, 'krx.trade_date 는 조회에 성공한 basDd 를 YYYY-MM-DD 로 표기')
+eq(r4['krx']['fdr_date'], _KRX_TRADE_DATE, 'krx.fdr_date 는 trade_date 와 같다(fix round 1 -- 다른 날 비교 금지)')
+eq(r4['krx']['krx_close'], _KRX_CLOSE, 'krx.krx_close 는 KRX 응답 종가')
+eq(r4['krx']['fdr_close'], _FDR_CLOSE_ON_TRADE, 'krx.fdr_close 는 trade_date **그 날짜**의 FDR 종가(마지막 행 아님)')
+_expected_diff = round((_KRX_CLOSE - _FDR_CLOSE_ON_TRADE) / _FDR_CLOSE_ON_TRADE * 100, 3)
+eq(r4['krx']['diff_pct'], _expected_diff, 'krx.diff_pct = (KRX-FDR)/FDR*100, 반올림 3자리')
 eq(set(tm.INDICATOR_KEYS) <= set(r4['latest'].keys()), True, 'latest 에 13개 지표 키가 모두 있다')
 eq(len(r4['series_tail']), 60, 'series_tail 은 최근 60행')
 eq(set(r4['definitions'].keys()), set(tm.INDICATOR_KEYS), 'definitions 는 13개 지표를 모두 설명한다')
@@ -356,10 +448,12 @@ with tempfile.TemporaryDirectory() as td:
     orig_root = tc.PROJECT_ROOT
     tc.PROJECT_ROOT = td
     try:
-        result, out_path = tm.run('테스트종목', code='036810', reader=_reader_ok, get_price=_get_price_ok)
+        result, out_path = tm.run('테스트종목', code='036810', reader=_reader_ok, get_price=_get_price_ok,
+                                   krx_call=_krx_call_ok)
         eq(os.path.exists(out_path), True, 'run() 이 market_data.json 을 저장한다')
         on_disk = json.load(open(out_path, encoding='utf-8'))
         eq(on_disk['status'], 'ok', '저장된 JSON 의 status')
+        eq(on_disk['krx']['status'], 'ok', '저장된 JSON 에도 krx 블록이 포함된다')
         manifest_path = os.path.join(tc.ta_dir('테스트종목'), 'manifest.json')
         manifest = json.load(open(manifest_path, encoding='utf-8'))
         eq(manifest['steps']['market_data']['status'], 'ok', 'manifest_update 로 진행 기록')

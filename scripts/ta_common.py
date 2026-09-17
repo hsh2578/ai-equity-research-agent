@@ -7,7 +7,9 @@
   - 경로: PROJECT_ROOT, ta_dir(), data_dir()
   - JSON: write_json()(원자적) / read_json()
   - 종목 식별: resolve_stock() (code 인자 -> analysis.json -> financial_summary.json
-    -> FinanceDataReader 상장목록 순으로 찾는다), name_variants()
+    -> FinanceDataReader 상장목록 -> KRX Open API 순으로 찾는다), name_variants()
+  - KRX Open API 폴백: krx_http_call() / krx_call_with_fallback() (일별매매 교차검증 등
+    다른 ta_*.py 에서도 재사용)
   - 반응 기사 필터: REACTION_PATTERNS / is_reaction_title()
   - 진행 기록: manifest_update() (ta/manifest.json)
   - 시각: KST / now_kst()
@@ -15,6 +17,7 @@
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -135,12 +138,104 @@ def _market_bucket(market):
     return None
 
 
-def resolve_stock(stock_name, code=None, listing=None):
+# ==================== KRX Open API 폴백 (Task 14) ====================
+# resolve_stock 이 기존 경로(analysis/financial_summary/KRX-DESC/detect_market)로
+# 시장을 못 정했을 때만 쓰는 마지막 수단. 승인된 6개 엔드포인트 중 종목기본정보
+# 2개(sto/stk_isu_base_info=KOSPI, sto/ksq_isu_base_info=KOSDAQ)만 쓴다.
+# 참고(읽기 전용, import 안 함): 알고픽/src/algopick/data/krx_open.py 의
+# _call_with_fallback 규칙(17시 이전=전 거래일, 평일만, 최대 5회 폴백)을 그대로 옮긴다.
+
+KRX_BASE = 'https://data-dbg.krx.co.kr/svc/apis/'
+
+
+def _krx_api_key():
+    """KRX_API_KEY 환경변수. 없으면 마스터 .env 를 한 번 로드해 재시도. 값은 절대 출력하지 않는다."""
+    key = os.environ.get('KRX_API_KEY')
+    if key:
+        return key
+    sys.path.insert(0, 'C:/Users/hsh/Desktop')
+    from env_loader import load_env
+    load_env()
+    return os.environ.get('KRX_API_KEY') or ''
+
+
+def krx_http_call(path, basDd, timeout=15):
+    """KRX Open API 단일 호출(기본 구현, krx_call 이 주입되지 않았을 때 쓰인다).
+    키 없음/HTTP 오류는 예외로 올린다 -- 호출자(krx_call_with_fallback)가 사유를
+    attempts 에 구조화해 남긴다(여기서 삼키지 않는다)."""
+    import ssl
+    import urllib.request
+
+    key = _krx_api_key()
+    if not key:
+        raise RuntimeError('KRX_API_KEY 없음')
+    url = f'{KRX_BASE}{path}?basDd={basDd}'
+    req = urllib.request.Request(url, headers={'AUTH_KEY': key, 'User-Agent': 'Mozilla/5.0'})
+    with urllib.request.urlopen(req, timeout=timeout, context=ssl.create_default_context()) as r:
+        body = json.loads(r.read().decode('utf-8', 'replace'))
+    return body.get('OutBlock_1') or []
+
+
+def krx_call_with_fallback(path, krx_call=None, max_lookback=5, now=None):
+    """basDd 를 오늘(평일 17시 이전이면 전 거래일)부터 평일만 골라 최대 max_lookback 회
+    조회하고, 빈 응답이면 하루씩 더 거슬러 올라간다(주말/공휴일 대응, 알고픽
+    krx_open._call_with_fallback 과 동일 규칙). krx_call(path, basDd) 주입 가능
+    (테스트용 -- 기본은 krx_http_call, 네트워크 호출). 반환: (rows, 마지막으로 시도한
+    basDd, 실패사유 리스트) -- rows 는 전부 실패/빈 응답이면 []."""
+    call = krx_call or krx_http_call
+    n = now or now_kst()
+    d = n.date()
+    if d.weekday() < 5 and n.hour < 17:
+        d -= timedelta(days=1)
+    reasons = []
+    last_basdd = None
+    for _ in range(max_lookback):
+        while d.weekday() >= 5:
+            d -= timedelta(days=1)
+        basDd = d.strftime('%Y%m%d')
+        last_basdd = basDd
+        try:
+            rows = call(path, basDd)
+        except Exception as e:
+            reasons.append(f'KRX {path} {basDd}: {type(e).__name__}: {e}')
+            rows = []
+        if rows:
+            return rows, basDd, reasons
+        d -= timedelta(days=1)
+    reasons.append(f'KRX {path}: {max_lookback}회 조회 모두 빈 응답')
+    return [], last_basdd, reasons
+
+
+def _krx_open_market_lookup(stock_name, found_code, krx_call=None):
+    """KRX 기본정보 2개 엔드포인트로 code/market 판별. found_code 가 있으면 그 코드가
+    있는 시장만 찾고, 없으면 이름(정식명 ISU_NM 또는 약칭 ISU_ABBRV 일치)으로 code 까지
+    찾는다. 반환: (code 또는 None, market 또는 None, 실패사유 리스트)."""
+    reasons = []
+    for path, market in (('sto/stk_isu_base_info', 'KOSPI'), ('sto/ksq_isu_base_info', 'KOSDAQ')):
+        rows, _basDd, why = krx_call_with_fallback(path, krx_call=krx_call)
+        reasons.extend(why)
+        for row in rows:
+            code = str(row.get('ISU_SRT_CD') or '').strip().zfill(6)
+            if not code or len(code) != 6 or not code.isdigit():
+                continue
+            if found_code:
+                if code == found_code:
+                    return found_code, market, reasons
+            else:
+                name = str(row.get('ISU_NM') or '').strip()
+                abbr = str(row.get('ISU_ABBRV') or '').strip()
+                if stock_name in (name, abbr):
+                    return code, market, reasons
+    return None, None, reasons
+
+
+def resolve_stock(stock_name, code=None, listing=None, krx_call=None):
     """종목명 -> 코드/시장/벤치마크/야후티커/결산월. 코드 탐색 순서: code 인자 ->
     analysis.json -> financial_summary.json -> KRX-DESC 상장목록(listing 주입 가능,
-    테스트용). market 은 위 소스 -> volatility_beta.detect_market() 순으로 채운다.
+    테스트용) -> **KRX Open API**(시장을 끝내 못 정했을 때만, krx_call 주입 가능).
+    market 은 위 소스 -> volatility_beta.detect_market() -> KRX Open API 순으로 채운다.
     코드를 못 찾거나 market 을 확정할 수 없으면(빈 문자열로 조용히 넘어가지 않는다)
-    LookupError.
+    LookupError. KRX Open API 로 채웠으면 source 는 'krx_open'.
     """
     attempts = []
     found_code = None
@@ -222,12 +317,28 @@ def resolve_stock(stock_name, code=None, listing=None):
             attempts.append(f'상장목록 조회 중 오류: {type(e).__name__}: {e}')
 
     if not found_code:
+        kcode, kmarket, kreasons = _krx_open_market_lookup(stock_name, None, krx_call=krx_call)
+        attempts.extend(kreasons)
+        if kcode:
+            found_code = kcode
+            if kmarket:
+                found_market = kmarket
+            source = 'krx_open'
+
+    if not found_code:
         raise LookupError(f"{stock_name}: 종목코드를 찾을 수 없음 -- " + ' / '.join(attempts))
 
     if not found_market:
         dm = _detect_market_cached(found_code, attempts)
         if dm:
             found_market = dm
+
+    if not found_market:
+        kcode2, kmarket2, kreasons2 = _krx_open_market_lookup(stock_name, found_code, krx_call=krx_call)
+        attempts.extend(kreasons2)
+        if kmarket2:
+            found_market = kmarket2
+            source = 'krx_open'
 
     bucket = _market_bucket(found_market)
     if bucket is None:
@@ -262,14 +373,28 @@ def name_variants(stock_name):
 
 REACTION_PATTERNS = (
     '특징주', '급등', '급락', '상한가', '하한가', '신고가', '신저가',
-    '강세', '약세', '주가 ', '장중', '마감시황', '오전시황', '[시황]', '52주',
+    '강세', '약세', '장중', '마감시황', '오전시황', '[시황]', '52주',
 )
+
+# 실측 누락(Task 14): "에프에스티 주가, 4월 30일 42,500원 1.62% 하락 마감" 이
+# 위 substring 목록의 '주가 '(공백 포함) 를 못 잡아 news 로 잘못 분류됐다(제목이
+# "주가,"). substring 대신 정규식으로 승격: 구두점이 붙은 "주가" / "N.N% 상승·하락·
+# 급등·급락" / "상승·하락 마감" 을 잡는다.
+_REACTION_REGEXES = tuple(re.compile(p) for p in (
+    r'주가\s*[,.:]?',
+    r'\d+(\.\d+)?%\s*(상승|하락|급등|급락)',
+    r'(상승|하락)\s*마감',
+    r'\d+(\.\d+)?%\s*[↑↓▲▼]',   # "에프에스티 10%↑ ..." -- 화살표 등락 표기 (컨트롤러 추가 실측)
+    r'[↑↓▲▼]\s*\d+(\.\d+)?%',
+))
 
 
 def is_reaction_title(title):
     """주가 움직임의 '원인' 이 아니라 '결과' 를 다루는 기사 제목인가."""
     t = title or ''
-    return any(p in t for p in REACTION_PATTERNS)
+    if any(p in t for p in REACTION_PATTERNS):
+        return True
+    return any(r.search(t) for r in _REACTION_REGEXES)
 
 
 # ==================== 진행 기록 ====================

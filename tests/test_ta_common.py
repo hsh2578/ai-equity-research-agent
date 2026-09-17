@@ -142,12 +142,15 @@ with tempfile.TemporaryDirectory() as td:
         eq(r3['settle_month'], None,
            'listing 을 안 거쳤으면 settle_month 는 None (여기서 새 fetch 를 만들지 않는다)')
 
-        # (c) 아무 데도 없으면 LookupError (빈 listing 으로 네트워크 폴백 차단)
-        raises(LookupError, lambda: tc.resolve_stock('없는종목', listing=pd.DataFrame(columns=KRX_DESC_COLUMNS)),
+        # (c) 아무 데도 없으면 LookupError (빈 listing + KRX 도 빈 응답으로 네트워크 폴백 차단)
+        _no_krx = lambda path, basDd: []  # noqa: E731
+        raises(LookupError,
+               lambda: tc.resolve_stock('없는종목', listing=pd.DataFrame(columns=KRX_DESC_COLUMNS),
+                                         krx_call=_no_krx),
                '어디서도 못 찾으면 LookupError')
 
-        # market 을 끝내 확정 못 하면 (코드는 있는데 market 빈 값 + detect_market 도 실패)
-        # 조용히 기본 벤치마크로 넘어가지 않고 LookupError 를 낸다.
+        # market 을 끝내 확정 못 하면 (코드는 있는데 market 빈 값 + detect_market 도 실패 +
+        # KRX Open API 도 빈 응답) 조용히 기본 벤치마크로 넘어가지 않고 LookupError 를 낸다.
         import volatility_beta as _vb
         _orig_detect = _vb.detect_market
         _vb.detect_market = lambda code: None
@@ -158,12 +161,102 @@ with tempfile.TemporaryDirectory() as td:
                  'Region': ''},
             ], columns=KRX_DESC_COLUMNS)
             raises(LookupError,
-                   lambda: tc.resolve_stock('시장모름', code='777777', listing=no_market_row),
+                   lambda: tc.resolve_stock('시장모름', code='777777', listing=no_market_row,
+                                             krx_call=_no_krx),
                    'market 을 확정 못 하면 조용히 기본값을 쓰지 않고 LookupError')
         finally:
             _vb.detect_market = _orig_detect
+
+        # ---------- KRX Open API 폴백 (Task 14) ----------
+        # (d) 이름으로도 못 찾았을 때: KRX 기본정보(코스닥 종목기본정보)에 약칭/정식명이
+        # 있으면 code+market 을 함께 채우고 source 는 'krx_open'.
+        def _krx_name_hit(path, basDd):
+            if path == 'sto/ksq_isu_base_info':
+                return [{'ISU_SRT_CD': '036810', 'ISU_NM': '에프에스티', 'ISU_ABBRV': '에프에스티'}]
+            return []
+
+        r_krx_name = tc.resolve_stock('에프에스티', listing=pd.DataFrame(columns=KRX_DESC_COLUMNS),
+                                       krx_call=_krx_name_hit)
+        eq(r_krx_name['code'], '036810', 'KRX 기본정보 이름 일치로 code 를 찾는다')
+        eq(r_krx_name['market'], 'KOSDAQ', 'ksq_isu_base_info 매칭 -> KOSDAQ')
+        eq(r_krx_name['source'], 'krx_open', 'KRX Open API 로 채웠으면 source 는 krx_open')
+
+        # (e) code 는 이미 아는데(=code_arg) listing/detect_market 이 전부 market 을 못 정했을 때:
+        # KRX 기본정보에서 그 code 가 있는 엔드포인트(KOSPI)로 market 만 채운다.
+        _vb.detect_market = lambda code: None
+        try:
+            def _krx_code_hit(path, basDd):
+                if path == 'sto/stk_isu_base_info':
+                    return [{'ISU_SRT_CD': '005930', 'ISU_NM': '삼성전자', 'ISU_ABBRV': '삼성전자'}]
+                return []
+
+            r_krx_code = tc.resolve_stock('삼성전자', code='005930', krx_call=_krx_code_hit)
+            eq(r_krx_code['market'], 'KOSPI', 'code 는 이미 알고 KRX 기본정보로 market 만 채운다')
+            eq(r_krx_code['source'], 'krx_open', 'market 을 KRX Open API 로 채웠으면 source 도 krx_open')
+        finally:
+            _vb.detect_market = _orig_detect
+
+        # (f) KRX 호출 자체가 실패(예외) + 나머지도 실패 -> 여전히 LookupError,
+        # attempts 에 KRX 실패 사유가 섞여 들어간다.
+        def _krx_raises(path, basDd):
+            raise TimeoutError('KRX 서버 응답 없음')
+
+        try:
+            tc.resolve_stock('없는종목2', listing=pd.DataFrame(columns=KRX_DESC_COLUMNS),
+                              krx_call=_krx_raises)
+            _failed.append(('KRX 실패 + 나머지 실패 -> LookupError', 'LookupError', '예외 없음'))
+        except LookupError as e:
+            _passed_local = 'KRX' in str(e) and 'TimeoutError' in str(e)
+            eq(_passed_local, True, 'KRX 호출 실패 사유가 LookupError 메시지(attempts)에 남는다')
+        except Exception as e:
+            _failed.append(('KRX 실패 + 나머지 실패 -> LookupError', 'LookupError', f'{type(e).__name__}: {e}'))
     finally:
         tc.PROJECT_ROOT = orig_root
+
+# ==================== krx_call_with_fallback -- 주말/17시 이전 폴백 ====================
+from datetime import datetime as _dt  # noqa: E402
+
+# (a) 평일 17시 이전 -> basDd 는 '오늘'이 아니라 '전 거래일'부터 시작한다.
+_calls = []
+
+
+def _krx_record(path, basDd):
+    _calls.append(basDd)
+    return [{'ok': True}] if basDd == '20250910' else []
+
+
+_rows_a, _basdd_a, _reasons_a = tc.krx_call_with_fallback(
+    'sto/stk_bydd_trd', krx_call=_krx_record,
+    now=_dt(2025, 9, 11, 9, 0, tzinfo=tc.KST))  # 2025-09-11 목요일 09:00 (17시 이전)
+eq(_basdd_a, '20250910', '평일 17시 이전이면 전 거래일부터 조회')
+eq(_rows_a, [{'ok': True}], '데이터가 있는 basDd 에서 즉시 반환')
+
+# (b) 토요일 + 빈 응답 -> 금요일 -> ... 평일만 건너뛰며 최대 5회, 주말은 건너뛰되 호출하지 않는다.
+_calls.clear()
+
+
+def _krx_empty(path, basDd):
+    _calls.append(basDd)
+    return []
+
+
+_rows_b, _basdd_b, _reasons_b = tc.krx_call_with_fallback(
+    'sto/stk_bydd_trd', krx_call=_krx_empty,
+    now=_dt(2025, 9, 13, 20, 0, tzinfo=tc.KST))  # 2025-09-13 토요일 20:00
+eq(_rows_b, [], '전부 빈 응답이면 rows=[]')
+eq(all(_dt.strptime(b, '%Y%m%d').weekday() < 5 for b in _calls), True,
+   '토요일에 호출해도 실제 조회 basDd 는 전부 평일이다(주말 skip)')
+eq(len(_calls), 5, '최대 max_lookback(5) 회만 시도한다')
+eq(any('빈 응답' in r for r in _reasons_b), True, '실패 사유가 reasons 에 남는다')
+
+# (c) 호출 자체가 예외를 던지면 reasons 에 예외타입/메시지가 남고 다음 날짜로 계속 진행한다.
+_rows_c, _basdd_c, _reasons_c = tc.krx_call_with_fallback(
+    'sto/stk_bydd_trd', krx_call=lambda path, basDd: (_ for _ in ()).throw(RuntimeError('boom')),
+    now=_dt(2025, 9, 11, 9, 0, tzinfo=tc.KST), max_lookback=2)
+eq(_rows_c, [], '전부 예외면 rows=[]')
+eq(len(_reasons_c) >= 2, True, '예외 사유가 매 시도마다 기록된다(+ 최종 요약 1개)')
+eq(all('RuntimeError' in r or '빈 응답' in r for r in _reasons_c), True,
+   '예외 사유 문자열에 예외 타입이 포함된다')
 
 # ==================== name_variants ====================
 eq(tc.name_variants('LS일렉트릭')[:2], ['LS일렉트릭', '엘에스일렉트릭'],
@@ -174,6 +267,16 @@ eq(tc.is_reaction_title('[특징주] 에프에스티, 삼성 납품 소식에 �
    '특징주+급등 기사는 반응 기사')
 eq(tc.is_reaction_title('에프에스티, EUV 펠리클 양산 공급 계약'), False,
    '공급계약 기사는 반응 기사가 아니다')
+
+# Task 14 실측 누락: '주가 ' substring(공백 필수)이 '주가,' 를 못 잡던 것을 정규식으로 보강
+eq(tc.is_reaction_title('에프에스티 주가, 4월 30일 42,500원 1.62% 하락 마감'), True,
+   '주가+쉼표 / N.N%+하락 / 하락 마감 전부 정규식으로 잡는다')
+eq(tc.is_reaction_title('에프에스티, CNT 펠리클 생산능력 확대…카나투 장비 추가 도입'), False,
+   '생산능력 확대 기사는 반응 기사가 아니다')
+
+# Task 14 part 3 추가 실측(컨트롤러 지적): 화살표 등락 표기도 반응 기사다
+eq(tc.is_reaction_title('에프에스티 10%↑ 마이크로컨텍솔 9%↑… 반도체 재료 부품주에 무슨'), True,
+   'N%+화살표(↑↓▲▼) 도 정규식으로 잡는다')
 
 # ==================== manifest_update ====================
 with tempfile.TemporaryDirectory() as td:

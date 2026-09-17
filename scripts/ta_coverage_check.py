@@ -215,12 +215,13 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('stock')
     ap.add_argument('--analysis', default=None)
+    ap.add_argument('--map', default=None, help='반영 지도 경로 (기본 ta/coverage_map.json)')
     a = ap.parse_args(argv)
 
     brief_paths = sorted(glob.glob(os.path.join(tc.ta_dir(a.stock), 'brief_*.md')))
     occurrences = parse_briefs(brief_paths)
 
-    coverage_map_path = os.path.join(tc.ta_dir(a.stock), 'coverage_map.json')
+    coverage_map_path = a.map or os.path.join(tc.ta_dir(a.stock), 'coverage_map.json')
     coverage_map = tc.read_json(coverage_map_path, default={}) or {}
 
     analysis_path = a.analysis or os.path.join(tc.PROJECT_ROOT, 'scripts',

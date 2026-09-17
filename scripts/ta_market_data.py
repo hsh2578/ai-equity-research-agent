@@ -299,9 +299,62 @@ def kis_cross_check(code, fdr_last_close, get_price=None):
     }
 
 
+# Fix round 1 (컨트롤러 라이브 체크 지적): KRX 확정거래일(trade_date)과 FDR 마지막
+# 행의 날짜가 다르면(예: KRX 9/15 확정, FDR 은 9/16 까지 있음) diff_pct 가 서로 다른
+# 날짜의 종가를 비교하는 셈이라 무의미하다. FDR "마지막" 종가 대신 KRX trade_date **그
+# 날짜의** FDR 종가를 찾아서 비교한다. 그 날짜가 FDR 에 없으면 status failed.
+REQUIRED_KRX_TRADE_FIELDS = ('TDD_CLSPRC',)
+
+
+def _fdr_close_on(fdr_df, date_str):
+    """fdr_df(날짜 인덱스, raw OHLCV) 에서 date_str('YYYY-MM-DD') 행의 Close. 없으면 None."""
+    ts = pd.Timestamp(date_str)
+    if ts not in fdr_df.index:
+        return None
+    return float(fdr_df.loc[ts, 'Close'])
+
+
+def krx_cross_check(code, fdr_df, krx_call=None):
+    """KRX Open API(ta_common.krx_call_with_fallback, Task 14) 최근 확정 거래일
+    일별매매 종가 vs **그 날짜의** FDR 종가를 교차검증(다른 날짜끼리 비교하면 diff_pct 가
+    무의미해진다 -- fix round 1). market(KOSPI/KOSDAQ) 을 모르므로 두 엔드포인트
+    (sto/stk_bydd_trd, sto/ksq_bydd_trd) 를 순회해 code 가 있는 쪽을 쓴다. fdr_df 는
+    build_market_data 의 raw OHLCV(날짜 인덱스, 오름차순)를 그대로 받는다."""
+    code6 = str(code).zfill(6)
+    try:
+        reasons = []
+        for path in ('sto/stk_bydd_trd', 'sto/ksq_bydd_trd'):
+            rows, basDd, why = tc.krx_call_with_fallback(path, krx_call=krx_call)
+            reasons.extend(why)
+            for row in rows:
+                rc = str(row.get('ISU_SRT_CD') or row.get('ISU_CD') or '').strip()
+                rc = rc[-6:].zfill(6) if rc else ''
+                if rc != code6:
+                    continue
+                missing = [f for f in REQUIRED_KRX_TRADE_FIELDS if row.get(f) in (None, '')]
+                if missing:
+                    return {'status': 'failed',
+                            'reason': f'KRX 응답에 필드 없음: {", ".join(missing)}'}
+                krx_close = float(str(row['TDD_CLSPRC']).replace(',', ''))
+                trade_date = f'{basDd[:4]}-{basDd[4:6]}-{basDd[6:]}'
+                fdr_close = _fdr_close_on(fdr_df, trade_date)
+                if fdr_close is None:
+                    return {'status': 'failed', 'reason': f'FDR 에 {trade_date} 행 없음'}
+                diff_pct = round((krx_close - fdr_close) / fdr_close * 100, 3) if fdr_close else None
+                return {
+                    'status': 'ok', 'reason': '',
+                    'trade_date': trade_date, 'krx_close': krx_close,
+                    'fdr_date': trade_date, 'fdr_close': fdr_close,
+                    'diff_pct': diff_pct,
+                }
+        return {'status': 'failed', 'reason': '; '.join(reasons) or 'KRX 응답에 종목코드 없음'}
+    except Exception as e:
+        return {'status': 'failed', 'reason': f'{type(e).__name__}: {e}'}
+
+
 # ==================== 조립 ====================
 
-def build_market_data(stock_name, code=None, days=700, reader=None, get_price=None):
+def build_market_data(stock_name, code=None, days=700, reader=None, get_price=None, krx_call=None):
     """순수 조립 함수 (파일 I/O 없음). code 를 직접 받으면 종목코드/시장 조회
     네트워크 호출(tc.resolve_stock)을 타지 않는다 -- 이 스크립트는 market(상장시장)
     을 쓰지 않으므로 --code 가 있을 때 굳이 그 조회를 태울 이유가 없다(판단)."""
@@ -334,6 +387,7 @@ def build_market_data(stock_name, code=None, days=700, reader=None, get_price=No
     var = compute_var(raw)
     fdr_last_close = float(raw['Close'].iloc[-1])
     kis = kis_cross_check(code6, fdr_last_close, get_price=get_price)
+    krx = krx_cross_check(code6, raw, krx_call=krx_call)
 
     return {
         'stock': stock_name, 'code': code6, 'asof': asof, 'rows': rows,
@@ -347,13 +401,15 @@ def build_market_data(stock_name, code=None, days=700, reader=None, get_price=No
         'signals': signals,
         'var': var,
         'kis': kis,
+        'krx': krx,
         'status': 'ok', 'reason': '',
     }
 
 
-def run(stock_name, code=None, days=700, reader=None, get_price=None):
+def run(stock_name, code=None, days=700, reader=None, get_price=None, krx_call=None):
     """build_market_data 실행 + ta/market_data.json 원자적 저장 + manifest 갱신."""
-    result = build_market_data(stock_name, code=code, days=days, reader=reader, get_price=get_price)
+    result = build_market_data(stock_name, code=code, days=days, reader=reader, get_price=get_price,
+                                krx_call=krx_call)
     out_path = os.path.join(tc.ta_dir(stock_name), 'market_data.json')
     tc.write_json(out_path, result)
     tc.manifest_update(stock_name, 'market_data', result['status'],
@@ -379,7 +435,7 @@ def main():
     print(f"[OK] {args.stock_name} ({result['code']}) rows={result['rows']} -> {out_path}")
     print(f"  RSI={result['latest']['rsi']} state={result['signals']['rsi_state']} "
           f"w52_pos={result['signals']['w52']['position_pct']}% "
-          f"kis={result['kis']['status']}")
+          f"kis={result['kis']['status']} krx={result['krx']['status']}")
     sys.exit(0)
 
 

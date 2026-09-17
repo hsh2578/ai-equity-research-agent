@@ -81,3 +81,6 @@ desktop.ini
 # ============================================================
 *.pdf.tmp
 *.html.tmp
+
+# Playwright MCP 스냅샷 (세션 임시)
+.playwright-mcp/

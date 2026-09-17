@@ -484,6 +484,12 @@ def build_ledger(fs, market=None, assumptions=None, fnguide=None, dart=None):
                  rim_value(A['bps0'], roe_f, A['ke'], A['g_terminal'], years, payout), excel, inputs,
                  definition=RIM_DEFINITION)
 
+    # 컨센서스 ROE (가정 입력 그대로) -- 본문이 '컨센서스 ROE' 를 인용하면 check 가 장부에서 찾게 한다
+    if roe_f:
+        refs1, inputs1, miss1 = _gather(book, [('roe_forecast_1', roe_f[0], src('roe_forecast'))])
+        book.add('roe', 'ratio', 'forecast yr1 (assumptions)', roe_f[0], f"={refs1['roe_forecast_1']}", inputs1,
+                 note='assumptions.roe_forecast[0] 그대로 -- 계산값 아님')
+
     # justified PBR
     refs, inputs, miss = _gather(book, [('roe_forecast_1', roe_f[0] if roe_f else None, src('roe_forecast')),
                                         ('ke', A.get('ke'), src('ke')),
@@ -502,6 +508,18 @@ def build_ledger(fs, market=None, assumptions=None, fnguide=None, dart=None):
     if price is None:
         price = pos(((market or {}).get('latest') or {}).get('close'))
         price_src = 'ta/market_data.json:latest.close'
+
+    # 현재가가 내재한 ROE: 적정 PBR 식을 거꾸로 푼다 -- ROE = g + (P/BPS0)*(ke-g). FCF 가 음수라 역DCF 를 못 쓸 때 대안
+    refs, inputs, miss = _gather(book, [('price', price, price_src), ('bps0', pos(A.get('bps0')), src('bps0')),
+                                        ('ke', A.get('ke'), src('ke')), ('g_terminal', A.get('g_terminal'), src('g_terminal'))])
+    if miss:
+        book.add('price_implied_roe', 'ratio', 'price vs bps0', inputs=inputs, reason=f'{need}: {", ".join(miss)}')
+    elif A['ke'] <= A['g_terminal']:
+        book.add('price_implied_roe', 'ratio', 'price vs bps0', inputs=inputs, reason='ke <= g_terminal')
+    else:
+        book.add('price_implied_roe', 'ratio', 'price vs bps0',
+                 A['g_terminal'] + price / A['bps0'] * (A['ke'] - A['g_terminal']),
+                 f"={refs['g_terminal']}+{refs['price']}/{refs['bps0']}*({refs['ke']}-{refs['g_terminal']})", inputs)
 
     # reverse DCF
     n = int(A.get('fcf_growth_years') or 0)
@@ -560,13 +578,78 @@ def build_ledger(fs, market=None, assumptions=None, fnguide=None, dart=None):
         book.add('upside_if_view', 'ratio', 'target vs price', A['target_price'] / price - 1,
                  f"={refs['target_price']}/{refs['price']}-1", inputs)
 
+    # SOTP (assumptions.sotp): 본업 EV/EBITDA + 상장 관계사 지분 시장가 + 비상장 지분 장부가 + 확률가중 옵션 - 순차입금
+    so = A.get('sotp') or {}
+    for name, sc in (so.get('scenarios') or {}).items():
+        key = f'sotp_value_per_share_{name}'
+        if sc.get('ebitda_annual') is not None:
+            eb_v, eb_s = sc['ebitda_annual'], src('sotp') + f' scenarios.{name}.ebitda_annual'
+        else:
+            eb_v = so['ebitda_half'] * 2 if isinstance(so.get('ebitda_half'), (int, float)) else None
+            eb_s = src('sotp') + ' ebitda_half x2 (반기 연환산)'
+        pairs = [(f'sotp_ebitda_annual_{name}', eb_v, eb_s),
+                 (f'sotp_multiple_{name}', sc.get('multiple'), src('sotp') + f' scenarios.{name}.multiple'),
+                 ('sotp_listed_stake', so.get('listed_stake'), src('sotp') + ' listed_stake'),
+                 ('sotp_listed_mcap', so.get('listed_mcap'), src('sotp') + ' listed_mcap'),
+                 (f'sotp_unlisted_{name}', so.get('unlisted_book') if sc.get('unlisted', True) else 0,
+                  src('sotp') + (' unlisted_book' if sc.get('unlisted', True) else f' scenarios.{name}.unlisted=false -> 0')),
+                 ('sotp_option_ev', so.get('option_ev_success'), src('sotp') + ' option_ev_success'),
+                 (f'sotp_option_prob_{name}', sc.get('option_prob'), src('sotp') + f' scenarios.{name}.option_prob'),
+                 ('sotp_option_discount', so.get('option_discount'), src('sotp') + ' option_discount'),
+                 ('sotp_net_debt', so.get('net_debt'), src('sotp') + ' net_debt'),
+                 ('shares', pos(A.get('shares')), src('shares'))]
+        refs, inputs, miss = _gather(book, pairs)
+        if miss:
+            book.add(key, 'KRW', f'SOTP {name}', inputs=inputs, reason=f'{need}: {", ".join(miss)}')
+            continue
+        g_ = lambda k: inputs[k]['value']  # noqa: E731
+        equity = (g_(f'sotp_ebitda_annual_{name}') * g_(f'sotp_multiple_{name}')
+                  + g_('sotp_listed_stake') * g_('sotp_listed_mcap') + g_(f'sotp_unlisted_{name}')
+                  + g_('sotp_option_ev') * g_(f'sotp_option_prob_{name}') * g_('sotp_option_discount')
+                  - g_('sotp_net_debt'))
+        r = refs
+        excel = (f"=({r[f'sotp_ebitda_annual_{name}']}*{r[f'sotp_multiple_{name}']}+{r['sotp_listed_stake']}*{r['sotp_listed_mcap']}"
+                 f"+{r[f'sotp_unlisted_{name}']}+{r['sotp_option_ev']}*{r[f'sotp_option_prob_{name}']}*{r['sotp_option_discount']}"
+                 f"-{r['sotp_net_debt']})*100000000/{r['shares']}")
+        book.add(key, 'KRW', f'SOTP {name}', equity * 1e8 / A['shares'], excel, inputs, equity_억=equity,
+                 definition='(반기 EBITDA x2 x 배수 + 상장지분율 x 시총 + 비상장 장부가 + 옵션EV x 확률 x 할인 - 순차입금) / 주식수. 억원 입력')
+        if price and name == 'base':
+            # 시장 내재 CNT 확률: 시총에서 옵션 뺀 조각들을 빼고 남은 값을 성공 시 옵션가치(EV x 할인)로 나눈다
+            mcap = price * A['shares'] / 1e8
+            ex_opt = equity - g_('sotp_option_ev') * g_(f'sotp_option_prob_{name}') * g_('sotp_option_discount')
+            pr0 = book.inp('price', price, price_src)
+            book.add('sotp_implied_option_prob', 'ratio', 'SOTP base vs price',
+                     (mcap - ex_opt) / (g_('sotp_option_ev') * g_('sotp_option_discount')),
+                     f"=({pr0}*{r['shares']}/100000000-({r[f'sotp_ebitda_annual_{name}']}*{r[f'sotp_multiple_{name}']}+{r['sotp_listed_stake']}*{r['sotp_listed_mcap']}+{r[f'sotp_unlisted_{name}']}-{r['sotp_net_debt']}))/({r['sotp_option_ev']}*{r['sotp_option_discount']})",
+                     inputs, note='현재 시가총액이 Base 배수·지분 가정 아래 CNT 옵션에 매긴 성공 확률')
+        if price:
+            pr = book.inp('price', price, price_src)
+            book.add(f'sotp_upside_{name}', 'ratio', f'SOTP {name} vs price', equity * 1e8 / A['shares'] / price - 1,
+                     f'={excel[1:]}/{pr}-1', inputs)
+
+    # SOTP 확률가중 기대가치 (assumptions.sotp.weights)
+    wts = so.get('weights') or {}
+    vals = {it['key'][len('sotp_value_per_share_'):]: it for it in book.items if it['key'].startswith('sotp_value_per_share_')}
+    if wts and all(k in vals and vals[k]['status'] == 'ok' for k in wts):
+        winp = {}
+        terms = []
+        for k, w in wts.items():
+            ref = book.inp(f'sotp_weight_{k}', w, src('sotp') + f' weights.{k}')
+            winp[f'sotp_weight_{k}'] = {'value': w, 'source': src('sotp') + f' weights.{k}', 'cell': ref}
+            terms.append(f"{ref}*{vals[k]['cell']}")
+        ev = sum(w * vals[k]['value'] for k, w in wts.items())
+        book.add('sotp_expected_value', 'KRW', 'SOTP weighted', ev, '=' + '+'.join(terms), winp,
+                 note='시나리오 확률은 판단값(assumptions.sotp.weights)')
+        if price:
+            book.add('sotp_expected_upside', 'ratio', 'SOTP weighted vs price', ev / price - 1, '', winp)
+
     # 입력 단위를 항목마다 명시한다 (비율 자체는 무단위, 입력이 무엇이었는지 기록)
     input_units = {
         'dfl': 'EPS 원/주, 영업이익 ' + STATEMENT_UNIT, 'dcl': 'dol x dfl',
         'eps_growth': '원/주 (financial_summary.json)',
         'altman_z': STATEMENT_UNIT + '; 시가총액 억원(KIS)',
         'var95_1d': '수익률 소수', 'var95_20d': '수익률 소수',
-        'rim_value_per_share': '원/주 (bps0), 비율 소수', 'justified_pbr': '비율 소수',
+        'rim_value_per_share': '원/주 (bps0), 비율 소수', 'justified_pbr': '비율 소수', 'price_implied_roe': '원/주 (price, bps0), 비율 소수',
         'reverse_dcf_implied_growth': 'fcf0/net_cash 억원, price 원, shares 주',
         'reverse_dcf_ev_residual': 'fcf0/net_cash 억원, price 원, shares 주', 'upside_if_view': '원',
     }
@@ -627,7 +710,7 @@ CHECK_NAMES = {
     'ROE': ['roe'], 'ROA': ['roa'], '영업 이익률': ['opm'],
     'DOL': ['dol'], '영업 레버리지': ['dol'], 'DFL': ['dfl'], '재무 레버리지': ['dfl'],
     'Altman Z': ['altman_z'], 'Z-score': ['altman_z'], 'Z 스코어': ['altman_z'], 'VaR': ['var95_1d', 'var95_20d'],
-    'RIM': ['rim_value_per_share'], '적정 PBR': ['justified_pbr'],
+    'RIM': ['rim_value_per_share'], '적정 PBR': ['justified_pbr'], '내재 ROE': ['price_implied_roe'],
     '내재 성장률': ['reverse_dcf_implied_growth'], '부채 비율': ['debt_ratio'],
     '유동 비율': ['current_ratio'], '이자 보상 배율': ['interest_coverage'],
 }

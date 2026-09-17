@@ -219,6 +219,24 @@ ASSUME = {'ke': 0.10, 'wacc': 0.095, 'g_terminal': 0.02, 'roe_forecast': [0.12, 
 LA = cl.build_ledger(FS, MARKET, ASSUME)
 eq(one(LA, 'rim_value_per_share')['status'], 'ok', 'assumptions 있으면 RIM ok')
 near(one(LA, 'justified_pbr')['value'], (0.12 - 0.02) / (0.10 - 0.02), 'justified_pbr = ggm 식')
+eq([i['value'] for i in LA['items'] if i['key'] == 'roe' and i['period'].startswith('forecast')], [0.12], '가정 ROE 가 장부 roe 항목으로')
+near(one(LA, 'price_implied_roe')['value'], 0.02 + 10000 / 10000 * (0.10 - 0.02), 'price_implied_roe = g + P/BPS*(ke-g)')
+# SOTP 손계산: (50*2*10 + 0.5*400 + 30 + 1000*0.5*0.8 - 500) = 1130억 / 100만주 = 113,000원; bear 는 비상장 0, 옵션 0
+ASO = {**ASSUME, 'sotp': {'ebitda_half': 50, 'listed_stake': 0.5, 'listed_mcap': 400, 'unlisted_book': 30,
+       'option_ev_success': 1000, 'option_discount': 0.8, 'net_debt': 500,
+       'scenarios': {'base': {'multiple': 10, 'option_prob': 0.5}, 'bear': {'multiple': 10, 'option_prob': 0, 'unlisted': False}}}}
+LS = cl.build_ledger(FS, MARKET, ASO)
+near(one(LS, 'sotp_value_per_share_base')['value'], 1130e8 / 1_000_000, 'SOTP base 손계산')
+near(one(LS, 'sotp_value_per_share_bear')['value'], (1000 + 200 - 500) * 1e8 / 1_000_000, 'SOTP bear: 비상장·옵션 0')
+near(one(LS, 'sotp_upside_base')['value'], 113000 / 10000 - 1, 'SOTP upside')
+# 시나리오별 EBITDA override + 확률가중
+ASO2 = {**ASO, 'sotp': {**ASO['sotp'], 'scenarios': {**ASO['sotp']['scenarios'], 'ttm': {'multiple': 10, 'option_prob': 0, 'unlisted': False, 'ebitda_annual': 60}},
+        'weights': {'base': 0.5, 'ttm': 0.5}}}
+LS2 = cl.build_ledger(FS, MARKET, ASO2)
+near(one(LS2, 'sotp_value_per_share_ttm')['value'], (60 * 10 + 200 - 500) * 1e8 / 1_000_000, 'SOTP ebitda_annual override')
+near(one(LS2, 'sotp_expected_value')['value'], 0.5 * 113000 + 0.5 * 30000, 'SOTP 확률가중 기대가치')
+# 내재 확률: 시총 100억 - (1000+200+30-500=730억) = -630억 / (1000*0.8) -> 음수도 그대로 기록
+near(one(LS, 'sotp_implied_option_prob')['value'], (10000 * 1_000_000 / 1e8 - 730) / 800, 'SOTP 내재 옵션 확률')
 rd = one(LA, 'reverse_dcf_implied_growth')
 eq(rd['status'], 'ok', 'reverse DCF ok')
 # 시총 = 10000원 x 100만주 = 100억, 순현금 -500(=순부채 500) -> EV 600억

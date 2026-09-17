@@ -356,19 +356,44 @@ def resolve_shares(stock_name, live_price, read_analysis=None, read_data_kis=Non
     return None, None, attempts
 
 
+def _kis_call_reason(e):
+    """KIS 호출 예외(HTTPError/ConnectionError/Timeout 등 requests 예외 + kis_api 가
+    던지는 그 밖의 모든 예외)를 flow.json reason 문자열로 만든다.
+    CLAUDE.md v5.18: 모의투자 서버(29443)는 간헐적으로 HTTP 500 을 낸다 -- 이 스크립트가
+    자체적으로 실전 서버로 재시도하지는 않고(그 전환은 _run_with_real_kis.py 의 책임),
+    500 이면 사용자가 그걸로 재실행하도록 사유에 힌트만 남긴다."""
+    status = getattr(getattr(e, 'response', None), 'status_code', None)
+    reason = f'{type(e).__name__}: {e}'
+    if status == 500:
+        reason += ' -- KIS 모의 500 -- scripts/_run_with_real_kis.py 로 재실행'
+    return reason
+
+
 def collect_flow(code, stock_name=None, flow_days=20, get_trend=None, get_price=None,
                  read_analysis=None, read_data_kis=None, read_financial_summary=None):
     """KIS 투자자별 수급을 주식수 -> 금액(현재가 근사)으로 환산한다.
-    get_trend/get_price/read_* 를 주입하면 kis_api 나 실제 파일 없이도 테스트 가능."""
+    get_trend/get_price/read_* 를 주입하면 kis_api 나 실제 파일 없이도 테스트 가능.
+
+    get_trend/get_price 호출은 예외를 던질 수 있다(kis_api.api_get 이
+    resp.raise_for_status() 를 호출해 HTTPError 를 그대로 올린다 -- 실측: 모의서버
+    500). 이 함수를 벗어나 스크립트를 죽이면 board.json 은 저장됐는데 flow.json 은
+    조용히 갱신 안 되는 상태가 남는다(2026-09-17 파일럿 실측 사고) -- 반드시 여기서
+    잡아 status:failed 로 반환한다."""
     if get_trend is None or get_price is None:
         import kis_api
         get_trend = get_trend or kis_api.get_investor_trend
         get_price = get_price or kis_api.get_current_price
 
-    trend = get_trend(code, days=flow_days)
+    try:
+        trend = get_trend(code, days=flow_days)
+    except Exception as e:
+        return {'status': 'failed', 'reason': _kis_call_reason(e)}
     if 'error' in trend:
         return {'status': 'failed', 'reason': trend['error']}
-    price = get_price(code)
+    try:
+        price = get_price(code)
+    except Exception as e:
+        return {'status': 'failed', 'reason': _kis_call_reason(e)}
     if 'error' in price:
         return {'status': 'failed', 'reason': f"현재가 조회 실패: {price['error']}"}
 
