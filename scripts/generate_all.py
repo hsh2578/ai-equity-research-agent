@@ -2118,7 +2118,7 @@ def _generate_summary_v2(data, output_dir):
     <div class="caption">— Final Call —</div>
     <div class="conclusion">{final_conclusion}</div>
     <div class="signature">
-      <span>Equity Research · Single-Agent v4</span>
+      <span>Equity Research</span>
       <span>{html_lib.escape(meta.get("date",""))}</span>
     </div>
   </div>
@@ -2620,7 +2620,8 @@ h1,h2,h3,h4,h5,.acover .co,.acover .kind{ font-family:var(--font-body) !importan
 .section-block .section-body ol.md-ordered li{
   font-size:9pt !important; color:var(--ink) !important; line-height:1.72 !important; }
 .section-block .section-body aside.margin-note{
-  float:left !important; width:38mm !important; margin:1mm 7mm 4mm -45mm !important;
+  float:left !important; clear:left !important; width:38mm !important; margin:1mm 7mm 4mm -45mm !important;
+  /* v5.23: clear:left -- 짧은 문단 뒤에 오는 다음 노트가 앞 노트와 겹치던 것(HD현대중공업 p12 실측) */
   border:none !important; border-left:none !important; background:none !important;
   padding:0 !important; border-radius:0 !important; box-shadow:none !important;
   font-size:9pt !important; line-height:1.5 !important; text-align:left !important;
@@ -2823,10 +2824,13 @@ _DETAILED_V3_CSS = r"""
 .section-block {
     /* v5.4 -- 12섹션 깊은 분량 (섹션당 3,000~5,500자) 대응:
        각 섹션 새 페이지 시작 + 표/박스 분할 보호 */
-    page-break-before: always;
-    break-before: page;
+    /* v5.23 (2026-09-18): 섹션마다 새 페이지를 강제하지 않는다 -- HD현대중공업 30p 실측에서
+       10~30% 만 찬 꼬리 페이지가 5장 나왔다(IR협의회 리포트는 섹션을 이어 쓴다).
+       제목은 아래 keep-with-next 규칙으로 본문과 붙는다. */
+    page-break-before: auto;
+    break-before: auto;
     page-break-inside: auto;
-    margin-top: 0;
+    margin-top: 9mm;
     /* 섹션 하단 여백/구분선을 두면, 섹션이 페이지를 거의 채웠을 때 그 여백만
        다음 페이지로 넘어가고 이어지는 섹션의 page-break-before 가 또 넘겨서
        **빈 페이지**가 생긴다 (LULU v2 21p 실측). 각 섹션이 어차피 새 페이지에서
@@ -2881,9 +2885,9 @@ _DETAILED_V3_CSS = r"""
   }
   /* v5.0 풀 재설계: 한 섹션 내 3번째 h3부터 자동 새 페이지 (큰 섹션 압축 차단) */
   .section-block .section-body h3:nth-of-type(n+3) {
-    page-break-before: always;
-    break-before: page;
-    margin-top: 0;
+    /* v5.23: 강제 분할 해제 (v5.0 '큰 섹션 압축 차단' 규칙은 꼬리 페이지의 주원인이었다) */
+    page-break-before: auto;
+    break-before: auto;
   }
   /* h3 + 다음 콘텐츠 (table/p/ul) 묶음 */
   .section-block .section-body h3 + table,
@@ -2891,6 +2895,15 @@ _DETAILED_V3_CSS = r"""
   .section-block .section-body h3 + ul,
   .section-block .section-body h3 + ol,
   .section-block .section-body h3 + blockquote {
+    page-break-before: avoid;
+    break-before: avoid;
+  }
+  .section-block .section-caption,
+  .section-block .section-heading {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+  .section-block .section-heading + .section-body > :first-child {
     page-break-before: avoid;
     break-before: avoid;
   }
@@ -3990,12 +4003,14 @@ def _generate_detailed_v3(data, output_dir):
 
     _toc_reading_order = f' 권장 독서 순서: {_ro}.' if _ro else ''
 
+    # v5.23: 목차 페이지 번호는 1차 렌더 뒤 PDF 에서 실제 시작 페이지를 읽어 채운다 (순번 p.3~ 은 실제와 달랐다)
+    _toc_captions = [(idx, f'{num} · {en.upper()}') for idx, (key, num, en, ko) in enumerate(_section_titles, start=1)]
     for idx, (key, num, en, ko) in enumerate(_section_titles, start=1):
         toc_items_html += (
             f'<div class="toc-item">'
             f'<span class="num">{num}</span>'
             f'<span class="title">{html_lib.escape(ko)}</span>'
-            f'<span class="pg">p.{idx + 2}</span>'
+            f'<span class="pg">p.[[TOCPG{idx}]]</span>'
             f'</div>'
         )
 
@@ -4163,7 +4178,7 @@ def _generate_detailed_v3(data, output_dir):
     <div class="caption">— Final Call —</div>
     <div class="conclusion">{final_conclusion}</div>
     <div class="signature">
-      <span>Equity Research · Single-Agent v4</span>
+      <span>Equity Research</span>
       <span>{html_lib.escape(meta.get("date",""))}</span>
     </div>
   </div>
@@ -4196,34 +4211,73 @@ def _generate_detailed_v3(data, output_dir):
     with open(html_path, 'w', encoding='utf-8') as f:
         f.write(html)
 
-    # PDF conversion via Playwright
+    # PDF conversion via Playwright (2-pass: 1차로 섹션 시작 페이지를 읽어 목차 번호를 채운다)
     try:
         from playwright.sync_api import sync_playwright
         pdf_path = os.path.join(output_dir, f'report_{name}_상세.pdf')
         file_url = "file:///" + os.path.abspath(html_path).replace("\\", "/")
-        with sync_playwright() as p:
-            browser = p.chromium.launch()
-            page = browser.new_page()
-            page.goto(file_url, wait_until='networkidle')
-            # v5.21: 웹폰트가 도착하기 전에 PDF 를 찍으면 시스템 폰트로
-            # fallback 된다(Wanted Sans 실측). 실패해도 생성은 계속한다.
-            try:
-                page.evaluate('document.fonts.ready')
-                page.wait_for_timeout(600)
-            except Exception as _e:
-                print(f'  [WARN] 웹폰트 대기 실패({type(_e).__name__}) - 기본 폰트로 진행')
-            page.pdf(
-                path=pdf_path,
-                format="A4",
-                margin={"top": "0mm", "bottom": "0mm", "left": "0mm", "right": "0mm"},
-                print_background=True,
-                prefer_css_page_size=True,
-            )
-            browser.close()
+
+        def _render_once():
+            with sync_playwright() as p:
+                browser = p.chromium.launch()
+                page = browser.new_page()
+                page.goto(file_url, wait_until='networkidle')
+                # v5.21: 웹폰트가 도착하기 전에 PDF 를 찍으면 시스템 폰트로
+                # fallback 된다(Wanted Sans 실측). 실패해도 생성은 계속한다.
+                try:
+                    page.evaluate('document.fonts.ready')
+                    page.wait_for_timeout(600)
+                except Exception as _e:
+                    print(f'  [WARN] 웹폰트 대기 실패({type(_e).__name__}) - 기본 폰트로 진행')
+                page.pdf(
+                    path=pdf_path,
+                    format="A4",
+                    margin={"top": "0mm", "bottom": "0mm", "left": "0mm", "right": "0mm"},
+                    print_background=True,
+                    prefer_css_page_size=True,
+                )
+                browser.close()
+
+        _render_once()
+        toc_pages = _toc_pages_from_pdf(pdf_path, _toc_captions)
+        if toc_pages:
+            html2 = html
+            for idx, _cap in _toc_captions:
+                html2 = html2.replace(f'p.[[TOCPG{idx}]]', f'p.{toc_pages.get(idx, "-")}')
+            with open(html_path, 'w', encoding='utf-8') as f:
+                f.write(html2)
+            _render_once()
+        else:
+            print('  [WARN] 목차 페이지 번호를 PDF 에서 읽지 못했다 -- 순번으로 둔다')
         os.remove(html_path)
         print(f'[OK] 상세 PDF (v3): {pdf_path} ({os.path.getsize(pdf_path)//1024} KB)')
     except Exception as e:
         print(f'[!!] PDF 변환 실패: {e}, HTML 파일은 유지됨 ({html_path})')
+
+
+def _toc_pages_from_pdf(pdf_path, captions):
+    """1차 렌더 PDF 에서 각 섹션 캡션('01 · OPINION & THESIS')이 처음 나오는 페이지 번호를 읽는다.
+    캡션은 letter-spacing 때문에 글자 사이에 공백이 끼어 추출되므로 공백을 전부 지우고 비교한다. 못 찾으면 {}."""
+    try:
+        import fitz
+    except ImportError:
+        return {}
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception:
+        return {}
+    pages = [re.sub(r'\s+', '', (pg.get_text() or '')).upper() for pg in doc]
+    doc.close()
+    out = {}
+    for idx, cap in captions:
+        key = re.sub(r'\s+', '', cap).upper()
+        for pno, txt in enumerate(pages, start=1):
+            if pno <= 3:
+                continue  # 커버·요약·목차 자체는 건너뛴다 (목차에는 제목이 있지만 캡션은 없다)
+            if key in txt:
+                out[idx] = pno
+                break
+    return out if len(out) >= max(1, len(captions) // 2) else {}
 
 
 # ============================================

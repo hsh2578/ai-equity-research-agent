@@ -810,6 +810,11 @@ dynamic-subset 이라 우연히 통과했고 Variable 폰트에서 드러났다.
 - **본문 = 교보형**: `.section-caption` 7pt 회색 트래킹 / `.section-heading` 17pt 액센트색
   + 하단 실선 / 본문 양쪽 정렬 / 표 헤더 액센트 연배경 + `tabular-nums`.
 
+**v5.23 (2026-09-18, HD현대중공업 30p 전수 PNG 실측) -- 레이아웃 셋을 고쳤다.**
+① 섹션마다 새 페이지(`.section-block { page-break-before: always }`)와 3번째 h3 강제 분할을 **해제**했다 -- 10~30% 만 찬 꼬리 페이지가 5장이었다. 제목은 `break-after: avoid` 로 본문과 붙는다(30p -> 25p).
+② **목차 페이지 번호는 2-pass** -- 1차 렌더 PDF 에서 섹션 캡션(`01 · OPINION & THESIS`, letter-spacing 공백 제거 후 비교)이 나오는 페이지를 `_toc_pages_from_pdf` 로 읽어 채운다. 전에는 순번(p.3~)을 찍어 실제와 달랐다.
+③ 마진노트 `aside.margin-note` 에 `clear:left` -- 짧은 문단 뒤 다음 노트가 앞 노트와 **겹쳤다**. 표가 페이지를 넘길 만큼 크면(`table.nyt` 는 분할 금지) 제목만 남고 빈 페이지가 생기므로 **12행 이상 표는 둘로 나눈다**.
+
 ⚠️ **커버 높이는 269mm** (`@page margin 14mm x 2`). 297mm 로 두면 **빈 페이지가 생긴다**.
 ⚠️ `p, li` 의 **`orphans:3 / widows:3`** 을 지운다면 빈 페이지가 돌아온다 --
 `_DETAILED_V3_CSS` 의 `widows:2` 로는 문단 끝 두 줄이 넘어가는 것을 못 막는다
