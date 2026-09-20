@@ -63,5 +63,30 @@ eq(cmd[-2:], ['CJ ENM', '035760'], '래퍼 뒤에 원래 인자')
 cmd2 = c._cmd(['fdr_band.py', 'CJ ENM', '035760'], real_kis=False)
 eq(any('_run_with_real_kis' in x for x in cmd2), False, '모의면 래퍼 없음')
 
+
+# 스케줄러: 작업이 예외로 죽거나 시간 초과여도 FAIL 로 기록되고 의존 작업은 skip 으로 정리된다(영원히 대기하지 않는다)
+import threading as _th
+import io as _io
+import contextlib as _cl
+_log, _lock = {}, _th.Lock()
+_tasks = [
+    {'name': 'a', 'argv': ['__no_such_script__.py', 'X'], 'deps': [], 'kis': True, 'needs': None},
+    {'name': 'b', 'argv': ['__no_such_script__.py', 'X'], 'deps': ['a'], 'kis': False, 'needs': None},
+    {'name': 'c', 'argv': ['__no_such_script__.py', 'X'], 'deps': [], 'kis': False, 'needs': None},
+]
+with _cl.redirect_stdout(_io.StringIO()):
+    _st = c.run_all(_tasks, False, 2, _log, _lock)
+eq(_st['a'], 'FAIL', '없는 스크립트(KIS 레인)는 FAIL 로 기록')
+eq(_st['b'], 'skip', '의존이 FAIL 이면 skip -- 무한 대기 없음')
+eq(_st['c'], 'FAIL', '없는 스크립트(병렬)는 FAIL')
+_t = {'name': 'slow', 'argv': ['-c', 'import time; time.sleep(5)'], 'deps': [], 'kis': False, 'needs': None}
+_orig = c._cmd
+c._cmd = lambda argv, real: [sys.executable] + argv  # 스크립트 경로 대신 -c 실행
+with _cl.redirect_stdout(_io.StringIO()):
+    _r = c.run_one(_t, False, _log, _lock, timeout=1)
+c._cmd = _orig
+eq(_r, 'FAIL', '시간 초과는 FAIL')
+eq(_log['slow']['reason'].startswith('timeout'), True, '사유에 timeout')
+
 print(f'\n  ta_collect_all 테스트: {len(FAILS)}개 실패' if FAILS else '\n  ta_collect_all 테스트: 전부 통과')
 sys.exit(1 if FAILS else 0)

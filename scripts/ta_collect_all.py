@@ -31,6 +31,7 @@ if (getattr(sys.stdout, 'encoding', '') or '').lower().replace('-', '') != 'utf8
 
 SCRIPTS = os.path.join(tc.PROJECT_ROOT, 'scripts')
 REAL_KIS_GAP = 65  # 실전 토큰은 분당 1회
+TASK_TIMEOUT = 1200  # 초. 한경 수집기가 30분 무응답이던 전례 -- 멈춘 작업은 FAIL(timeout) 으로 끊고 나머지는 계속
 
 
 def build_tasks(stock, code, opts):
@@ -113,16 +114,23 @@ def _cmd(argv, real_kis):
     return exe + [os.path.join(SCRIPTS, argv[0])] + list(argv[1:])
 
 
-def run_one(task, real_kis, log, lock):
+def run_one(task, real_kis, log, lock, timeout=None):
+    """한 작업. 예외·타임아웃도 FAIL 로 기록한다 -- 여기서 예외가 새면 스케줄러가 그 작업의 상태를 못 받아 의존 작업이 영원히 기다린다."""
+    timeout = TASK_TIMEOUT if timeout is None else timeout
     if task.get('needs') and not os.path.exists(task['needs']):
         rec = {'status': 'skip', 'reason': f'입력 없음: {os.path.basename(task["needs"])}', 'sec': 0}
     else:
         t0 = time.time()
-        p = subprocess.run(_cmd(task['argv'], real_kis and task['kis']), capture_output=True, cwd=tc.PROJECT_ROOT,
-                           env=dict(os.environ, PYTHONIOENCODING='utf-8'))
-        out = (p.stdout + p.stderr).decode('utf-8', 'replace').splitlines()
-        rec = {'status': 'ok' if p.returncode == 0 else 'FAIL', 'returncode': p.returncode,
-               'sec': round(time.time() - t0, 1), 'tail': [l for l in out if l.strip()][-6:]}
+        try:
+            p = subprocess.run(_cmd(task['argv'], real_kis and task['kis']), capture_output=True, cwd=tc.PROJECT_ROOT,
+                               env=dict(os.environ, PYTHONIOENCODING='utf-8'), timeout=timeout)
+            out = (p.stdout + p.stderr).decode('utf-8', 'replace').splitlines()
+            rec = {'status': 'ok' if p.returncode == 0 else 'FAIL', 'returncode': p.returncode,
+                   'sec': round(time.time() - t0, 1), 'tail': [l for l in out if l.strip()][-6:]}
+        except subprocess.TimeoutExpired:
+            rec = {'status': 'FAIL', 'reason': f'timeout {timeout}s', 'sec': round(time.time() - t0, 1), 'tail': []}
+        except Exception as e:  # noqa: BLE001 -- 스크립트 없음·인코딩 등
+            rec = {'status': 'FAIL', 'reason': f'{type(e).__name__}: {e}'[:200], 'sec': round(time.time() - t0, 1), 'tail': []}
     with lock:
         log[task['name']] = rec
         mark = {'ok': '[ok  ]', 'FAIL': '[FAIL]', 'skip': '[skip]'}[rec['status']]
@@ -146,7 +154,12 @@ def run_all(tasks, real_kis, workers, log, lock):
         for i, t in enumerate(kis_tasks):
             if real_kis and i > 0:
                 time.sleep(REAL_KIS_GAP)
-            status[t['name']] = run_one(t, real_kis, log, lock)
+            try:
+                status[t['name']] = run_one(t, real_kis, log, lock)
+            except Exception as e:  # noqa: BLE001 -- 레인이 죽어도 남은 KIS 작업 상태를 채워 의존 작업이 skip 으로 정리되게
+                with lock:
+                    log[t['name']] = {'status': 'FAIL', 'reason': f'lane error {type(e).__name__}: {e}'[:200], 'sec': 0}
+                status[t['name']] = 'FAIL'
 
     pool = ThreadPoolExecutor(max_workers=workers)
     futures = {}
@@ -177,13 +190,20 @@ def run_all(tasks, real_kis, workers, log, lock):
         done, _ = wait(list(futures), return_when=FIRST_COMPLETED, timeout=1.0)
         for f in done:
             name = futures.pop(f)
+            try:
+                res = f.result()
+            except Exception as e:  # noqa: BLE001
+                res = 'FAIL'
+                with lock:
+                    log[name] = {'status': 'FAIL', 'reason': f'{type(e).__name__}: {e}'[:200], 'sec': 0}
             if name != '__kis__':
-                status[name] = f.result()
+                status[name] = res
     pool.shutdown(wait=True)
     return status
 
 
 def main(argv=None):
+    global TASK_TIMEOUT
     ap = argparse.ArgumentParser(description='/research-ta 수집기 병렬 실행')
     ap.add_argument('stock')
     ap.add_argument('--code', default=None)
@@ -197,6 +217,7 @@ def main(argv=None):
     ap.add_argument('--only', default=None, help='쉼표 구분 작업명 (의존은 자동 포함)')
     ap.add_argument('--skip', default=None)
     ap.add_argument('--workers', type=int, default=6)
+    ap.add_argument('--timeout', type=int, default=TASK_TIMEOUT, help='작업당 초 (기본 1200)')
     ap.add_argument('--dry-run', action='store_true')
     a = ap.parse_args(argv)
 
@@ -214,6 +235,7 @@ def main(argv=None):
 
     log, lock = {}, threading.Lock()
     t0 = time.time()
+    TASK_TIMEOUT = a.timeout
     status = run_all(tasks, a.real_kis, a.workers, log, lock)
     total = round(time.time() - t0)
     fails = [n for n, s in status.items() if s == 'FAIL']

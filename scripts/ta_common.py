@@ -410,18 +410,18 @@ def manifest_update(stock_name, step, status, **detail):
     # ta_collect_all 이 수집기 19개를 병렬로 돌리면 read-modify-write 가 겹쳐 step 이 사라진다 -> 프로세스 간 잠금(O_EXCL 락 파일)
     lock = path + '.lock'
     import time as _time
-    t0 = _time.time()
     while True:
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.close(fd)
             break
         except FileExistsError:
-            if _time.time() - t0 > 30:  # 죽은 프로세스가 남긴 락
-                try:
+            # 죽은 프로세스가 남긴 락은 파일 나이로 판정한다 -- 기다린 시간으로 하면 대기자 둘이 서로의 살아 있는 락을 지운다
+            try:
+                if _time.time() - os.path.getmtime(lock) > 30:
                     os.remove(lock)
-                except OSError:
-                    pass
+            except OSError:
+                pass
             _time.sleep(0.05)
     try:
         manifest = read_json(path, {}) or {}
