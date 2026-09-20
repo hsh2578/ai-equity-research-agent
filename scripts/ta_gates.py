@@ -80,8 +80,9 @@ def _run(name, argfmt, stock):
         # 점수 게이트: 참고-리포트 톤은 85± 가 정상(wf-report 규칙). 80 미만일 때만 FAIL 로 본다
         m = [_SCORE_RE.search(l) for l in lines]
         score = next((int(x.group(1)) for x in m if x), None)
-        fails = [f'서술 품질 {score}점 < 80'] if score is not None and score < 80 else []
-        summary = [f'서술 품질 {score}/100 (참고-리포트 톤 85± 정상)'] if score is not None else summary
+        if score is not None:  # 점수를 못 찍고 죽었으면(Traceback) 위에서 잡은 fails 를 덮지 않는다
+            fails = [f'서술 품질 {score}점 < 80'] if score < 80 else []
+            summary = [f'서술 품질 {score}/100 (참고-리포트 톤 85± 정상)']
     if p.returncode not in (0, 1) and not fails:
         # 인자 오류·예외로 죽은 검사기는 '통과'가 아니다 -- 마지막 줄을 FAIL 로 올린다
         fails = [f'[ERROR] exit={p.returncode}: ' + (lines[-1].strip() if lines else '출력 없음')]

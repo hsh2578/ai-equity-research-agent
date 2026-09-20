@@ -40,7 +40,10 @@ eq(byn['reports']['argv'], ['ta_collect_reports.py', 'CJ ENM', '--industry-categ
 eq('--no-hankyung' in c.build_tasks('CJ ENM', '035760', opts(hankyung=True))[names.index('reports')]['argv'], False, '--hankyung 이면 한경 포함')
 eq(byn['peer_snapshot']['argv'], ['peer_snapshot.py', 'CJ ENM', 'media'], '업종키 전달')
 eq(byn['event_study_2']['deps'], ['news_window'], '이벤트 스터디 2회차는 뉴스 창 뒤')
-eq(byn['company_voice']['deps'], ['kind_ir', 'news_body'], 'company_voice 는 IR + 뉴스 본문 뒤')
+eq(set(byn['company_voice']['deps']) >= {'kind_ir', 'company_ir', 'news_body'}, True, 'company_voice 는 IR 둘 + 뉴스 본문 뒤')
+eq('volatility_beta' in byn['build_snapshot']['deps'], True, 'build_snapshot 은 KIS 레인 마지막(volatility_beta)까지 기다린다')
+_last = byn['plan_agents']['deps']
+eq(all(n in _last for n in names if n not in ('plan_agents', 'build_snapshot', 'news', 'event_study', 'news_window', 'news_body', 'dart_full', 'dart_filings', 'kind_ir', 'company_ir', 'financial_summary', 'fdr_band')), True, 'plan_agents 는 읽는 재료의 생산자 전부를 기다린다')
 eq(byn['news_body']['deps'], ['news_window'], 'news_body 와 news_window 는 같은 파일을 쓰므로 직렬')
 eq(byn['company_ir']['deps'], ['kind_ir'], 'company_ir 와 kind_ir 는 같은 index.json 을 쓰므로 직렬')
 eq(set(byn['event_study']['deps']) >= {'dart_filings', 'price_cycles'}, True, 'event_study 는 공시·사이클 파일 뒤')
@@ -85,6 +88,18 @@ c._cmd = lambda argv, real: [sys.executable] + argv  # 스크립트 경로 대�
 with _cl.redirect_stdout(_io.StringIO()):
     _r = c.run_one(_t, False, _log, _lock, timeout=1)
 c._cmd = _orig
+# 선택 입력(trade_query.json 등)이 없어 건너뛴 작업은 뒤 작업을 막지 않는다
+_t2 = [
+    {'name': 'opt', 'argv': ['x.py'], 'deps': [], 'kis': False, 'needs': os.path.join(os.getcwd(), '__no_such_input__.json')},
+    {'name': 'after', 'argv': ['-c', 'pass'], 'deps': ['opt'], 'kis': False, 'needs': None},
+]
+_log2 = {}
+c._cmd = lambda argv, real: [sys.executable] + argv
+with _cl.redirect_stdout(_io.StringIO()):
+    _st2 = c.run_all(_t2, False, 2, _log2, _lock)
+c._cmd = _orig
+eq(_st2['opt'], 'skip_optional', '선택 입력 없음은 skip_optional')
+eq(_st2['after'], 'ok', '그 뒤 작업은 그대로 돈다')
 eq(_r, 'FAIL', '시간 초과는 FAIL')
 eq(_log['slow']['reason'].startswith('timeout'), True, '사유에 timeout')
 

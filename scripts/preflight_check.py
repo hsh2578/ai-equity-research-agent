@@ -198,7 +198,7 @@ def main(stock_name: str) -> int:
                     continue
                 fails.append(f'C8 {k}={v} -- 양수 의무')
         bear, base, bull = opinion.get('target_bear', 0), opinion.get('target_base', 0), opinion.get('target_bull', 0)
-        if bear and base and bull:
+        if base and bull:  # bear 는 0(주주 잔여가치 없음)일 수 있다 -- 그래도 0 < base < bull 은 성립해야 한다
             if not (bear < base < bull):
                 fails.append(f'C8 Bear({bear}) < Base({base}) < Bull({bull}) 순서 위반')
 

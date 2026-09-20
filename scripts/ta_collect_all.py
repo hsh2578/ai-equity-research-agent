@@ -78,9 +78,12 @@ def build_tasks(stock, code, opts):
     add('calendar', ['ta_calendar.py', stock], deps=['news_window', 'dart_filings', 'financial_summary'])
     add('company_ir', ['ta_company_ir.py', stock], deps=['kind_ir'])  # 둘 다 ir_materials/index.json 에 쓴다 -> 직렬
     add('evidence_scan', ['evidence_scan.py', stock], deps=['dart_full', 'reports'])
-    add('company_voice', ['ta_company_voice.py', stock, '--irtv'], deps=['kind_ir', 'news_body'])
-    add('build_snapshot', ['build_snapshot.py', stock], deps=['financial_summary', 'fdr_band', 'peer_snapshot', 'dart_full', 'wisereport'])
-    add('plan_agents', ['ta_plan_agents.py', stock], deps=['event_study_2', 'dart_diff', 'reports', 'company_voice', 'board_flow'])
+    add('company_voice', ['ta_company_voice.py', stock, '--irtv'], deps=['kind_ir', 'company_ir', 'news_body'])  # index.json 의 site 항목까지 읽는다
+    add('build_snapshot', ['build_snapshot.py', stock], deps=['financial_summary', 'fdr_band', 'peer_snapshot', 'volatility_beta', 'dart_full', 'wisereport', 'dart_quarterly'])
+    # 마지막 집계 -- 읽는 파일의 생산자 전부를 기다린다(없는 파일을 조용히 빼는 _fixed_inputs 때문에 경쟁에서 지면 재료가 말없이 빠진다)
+    add('plan_agents', ['ta_plan_agents.py', stock], deps=['event_study_2', 'dart_diff', 'reports', 'company_voice', 'board_flow', 'market_data',
+                                                        'calendar', 'evidence_scan', 'driver_scan', 'macro', 'dart_quarterly', 'wisereport',
+                                                        'peer_global', 'peer_snapshot', 'volatility_beta', 'price_cycles', 'trade_stats', 'customer_docs'])
     return T
 
 
@@ -118,7 +121,7 @@ def run_one(task, real_kis, log, lock, timeout=None):
     """한 작업. 예외·타임아웃도 FAIL 로 기록한다 -- 여기서 예외가 새면 스케줄러가 그 작업의 상태를 못 받아 의존 작업이 영원히 기다린다."""
     timeout = TASK_TIMEOUT if timeout is None else timeout
     if task.get('needs') and not os.path.exists(task['needs']):
-        rec = {'status': 'skip', 'reason': f'입력 없음: {os.path.basename(task["needs"])}', 'sec': 0}
+        rec = {'status': 'skip', 'reason': f'입력 없음: {os.path.basename(task["needs"])}', 'sec': 0, 'optional': True}
     else:
         t0 = time.time()
         try:
@@ -136,7 +139,7 @@ def run_one(task, real_kis, log, lock, timeout=None):
         mark = {'ok': '[ok  ]', 'FAIL': '[FAIL]', 'skip': '[skip]'}[rec['status']]
         print(f"  {mark} {task['name']:<18} {rec.get('sec', 0):>6}s  {rec.get('reason') or (rec['tail'][-1][:90] if rec.get('tail') else '')}")
         sys.stdout.flush()
-    return rec['status']
+    return 'skip_optional' if rec.get('optional') else rec['status']  # 선택 입력이 없어 건너뛴 것은 의존을 막지 않는다
 
 
 def run_all(tasks, real_kis, workers, log, lock):
@@ -170,7 +173,7 @@ def run_all(tasks, real_kis, workers, log, lock):
         ready = []
         for t in list(pending):
             deps = t['deps']
-            if all(status.get(d) == 'ok' for d in deps):
+            if all(status.get(d) in ('ok', 'skip_optional') for d in deps):
                 ready.append(t)
             elif any(status.get(d) in ('FAIL', 'skip') for d in deps):
                 bad = [d for d in deps if status.get(d) in ('FAIL', 'skip')]
@@ -239,7 +242,7 @@ def main(argv=None):
     status = run_all(tasks, a.real_kis, a.workers, log, lock)
     total = round(time.time() - t0)
     fails = [n for n, s in status.items() if s == 'FAIL']
-    skips = [n for n, s in status.items() if s == 'skip']
+    skips = [n for n, s in status.items() if s in ('skip', 'skip_optional')]
     out = {'stock': a.stock, 'code': code, 'asof': tc.now_kst().isoformat(), 'total_sec': total,
            'real_kis': a.real_kis, 'tasks': log, 'fails': fails, 'skips': skips}
     path = os.path.join(tc.ta_dir(a.stock), 'collect_log.json')
