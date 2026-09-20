@@ -35,6 +35,9 @@ GATES = [
     ('section_rubric', '{s}', True),
     ('verify_style', '{s}', True),
 ]
+# 형식 게이트: FAIL 이 나도 'warn' 으로 표시하고 실패 수에 넣지 않는다 (v5.26, 2026-09-21).
+# source_coverage 는 "사업보고서에 있는데 본문이 안 쓴 것" 을 FAIL 로 내 본문을 사업보고서 쪽으로 미는 유일한 검사였다(신세계 실측).
+FORM_GATES = {'source_coverage'}
 _FAIL_RE = re.compile(r'\[(?:✗|X|FAIL|ERROR)[ \]]|\[ERROR\]|Traceback|총 FAIL: ?[1-9]|(?<!0건 )FAIL [1-9]\d* ?건|/ FAIL [1-9]|FAIL: [1-9]\d* /')
 _SUMMARY_RE = re.compile(r'총 FAIL|FAIL \d+건|/ FAIL|FAIL 0건|점수|통과|합계|calc_check|_gate\]|coverage_check\]|preflight')
 _SCORE_RE = re.compile(r'점수[^:]*:\s*(\d+)/100')
@@ -92,7 +95,8 @@ def run_gates(stock, only=None):
         for name, argfmt, _ in gates:
             r = _run(name, argfmt, stock)
             results.append(r)
-            mark = 'FAIL' if r['fail_lines'] else 'ok'
+            r['form'] = name in FORM_GATES
+            mark = ('warn' if r['form'] else 'FAIL') if r['fail_lines'] else 'ok'
             print(f"  [{mark:4}] {name:20} exit={r['exit']}  {r['summary'][:110]}")
             for l in r['fail_lines'][:6]:
                 print(f'           {l.strip()[:150]}')
@@ -102,7 +106,7 @@ def run_gates(stock, only=None):
                 shutil.move(base + '.bak_gates', base)
             else:
                 os.remove(base)
-    n_fail = sum(1 for r in results if r['fail_lines'])
+    n_fail = sum(1 for r in results if r['fail_lines'] and not r.get('form'))
     tc.write_json(os.path.join(tc.ta_dir(stock), 'gates.json'), {'stock': stock, 'results': results, 'gates_with_fail': n_fail})
     print(f'[ta_gates] {stock} -- {len(results)}종 중 FAIL 있는 게이트 {n_fail}개 (원본 analysis_{stock}.json {"복원" if had else "복사본 제거"})')
     return 1 if n_fail else 0

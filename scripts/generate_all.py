@@ -206,6 +206,15 @@ _EMOJI_RE = re.compile(
 # Decorative pictographs to explicitly drop (mostly outside or special)
 _EXTRA_DROP_CHARS = "🔴🟠🟡🟢🔵🟣⚫⚪✅❌⚠️🎯🔥💎🏗📊🔍📚📌📈📉💰🎨🚀✨💡🛡⏱👁🛑🛠📑🏷"
 
+def _fmt_peer_mult(v, nd):
+    """peer PER/PBR 표시 자리수 (v5.26): 해외 peer(yfinance) 는 15.408349 처럼 float 그대로 온다. 문자열('적자' 등)은 그대로."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    return f'{f:.{nd}f}'
+
+
 def _strip_emoji(text):
     """Remove emoji and decorative pictographs from text. ★ ☆ are preserved (used in star ratings)."""
     if not text:
@@ -2230,11 +2239,16 @@ def _generate_summary_legacy(data, output_dir):
     for s in segs:
         seg_rows += f'<tr><td><strong>{s["name"]}</strong></td><td>{s["pct"]}%</td><td>{s["outlook"]}</td></tr>'
 
-    # Peer 테이블
+    # Peer 테이블 -- 해외 peer(yfinance) 는 15.408349 처럼 float 그대로 오므로 자리수를 맞춘다 (v5.26)
+    def _fmt_mult(v, nd):
+        try:
+            return f'{float(v):.{nd}f}' if not isinstance(v, str) or v.replace('.', '', 1).replace('-', '', 1).isdigit() else v
+        except (TypeError, ValueError):
+            return v
     peer_rows = ''
     for p in peers:
         hl = ' style="background:#fff3e0;"' if p.get("highlight") else ''
-        peer_rows += f'<tr{hl}><td><strong>{p["name"]}</strong></td><td>{p["market_cap"]}</td><td>{p["per"]}</td><td>{p["pbr"]}</td><td>{p["note"]}</td></tr>'
+        peer_rows += f'<tr{hl}><td><strong>{p["name"]}</strong></td><td>{p["market_cap"]}</td><td>{_fmt_mult(p["per"], 1)}</td><td>{_fmt_mult(p["pbr"], 2)}</td><td>{p["note"]}</td></tr>'
 
     # 카탈리스트
     cat_rows = ''
@@ -2848,13 +2862,16 @@ _DETAILED_V3_CSS = r"""
     border-bottom: none;
     margin-bottom: 0;
   }
-  /* 표/인용 박스/code block 분할 방지 (가독성 보호) */
-  .section-block table,
+  /* 인용 박스/code block 은 분할 금지. 표는 v5.26(2026-09-21 신세계 실측)부터 행 단위로 분할한다 --
+     9행 표를 통째로 다음 페이지로 넘겨 40~60% 빈 페이지가 4장 생겼다. thead 는 페이지마다 반복. */
   .section-block blockquote,
   .section-block pre {
     page-break-inside: avoid;
     break-inside: avoid;
   }
+  .section-block table { page-break-inside: auto; break-inside: auto; }
+  .section-block table tr { page-break-inside: avoid; break-inside: avoid; }
+  .section-block table thead { display: table-header-group; }
   .section-block .section-caption {
     margin-top: 0;
     margin-bottom: 0.5mm;
@@ -2934,7 +2951,9 @@ _DETAILED_V3_CSS = r"""
 
   /* Avoid orphans/widows + table integrity */
   p { orphans: 2; widows: 2; margin: 1mm 0; }
-  table.nyt { page-break-inside: avoid; break-inside: avoid; max-width: 100%; }
+  table.nyt { page-break-inside: auto; break-inside: auto; max-width: 100%; }  /* v5.26: 행 단위 분할(위 .section-block table tr) */
+  table.nyt tr { page-break-inside: avoid; break-inside: avoid; }
+  table.nyt thead { display: table-header-group; }
   blockquote.md-quote { page-break-inside: avoid; break-inside: avoid; }
   /* 마무리 인용이 앞 문단에서 떨어져 혼자 다음 페이지로 가면 빈 페이지가 된다
      (CJ프레시웨이 실측: 5페이지에 40자만 남았다). 앞 문단과 붙여 둔다. */
@@ -3298,7 +3317,7 @@ _DETAILED_V3_CSS = r"""
     border-collapse: collapse;
     font-size: 8.5pt;
     margin: 3mm 0 4mm 0;
-    page-break-inside: avoid;
+    page-break-inside: auto;  /* v5.26: 행 단위 분할 -- 이 규칙이 뒤에 있어 앞의 auto 를 덮어썼다(신세계 실측: 여전히 반 페이지 6장) */
   }
   table.nyt thead tr {
     border-top: 2px solid #0b2545;
@@ -4028,8 +4047,8 @@ def _generate_detailed_v3(data, output_dir):
                 f'<tr{hi_cls}>'
                 f'<td class="name">{html_lib.escape(_strip_emoji(str(pe.get("name",""))))}</td>'
                 f'<td class="num">{html_lib.escape(_strip_emoji(str(pe.get("market_cap",""))))}</td>'
-                f'<td class="num">{html_lib.escape(_strip_emoji(str(pe.get("per",""))))}</td>'
-                f'<td class="num">{html_lib.escape(_strip_emoji(str(pe.get("pbr",""))))}</td>'
+                f'<td class="num">{html_lib.escape(_strip_emoji(_fmt_peer_mult(pe.get("per",""), 1)))}</td>'
+                f'<td class="num">{html_lib.escape(_strip_emoji(_fmt_peer_mult(pe.get("pbr",""), 2)))}</td>'
                 f'<td style="font-size:8.5pt;">{html_lib.escape(_strip_emoji(str(pe.get("note","")))[:50])}</td>'
                 f'</tr>'
             )
@@ -4043,8 +4062,8 @@ def _generate_detailed_v3(data, output_dir):
             cat_mini_html += (
                 f'<tr>'
                 f'<td class="name">{html_lib.escape(_strip_emoji(str(ct.get("date",""))))}</td>'
-                f'<td>{html_lib.escape(_strip_emoji(str(ct.get("event","")))[:70])}</td>'
-                f'<td class="num">{html_lib.escape(_strip_emoji(str(ct.get("impact",""))))}</td>'
+                f'<td>{html_lib.escape(_strip_emoji(str(ct.get("event","")))[:40])}</td>'
+                f'<td class="num">{html_lib.escape(_strip_emoji(str(ct.get("impact",""))))[:16]}</td>'  # v5.26: 커버 우측 열이 좁아 16자 넘으면 표가 페이지를 넘친다(신세계 실측 23~55자)
                 f'</tr>'
             )
         cat_mini_html += '</tbody></table>'

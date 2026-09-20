@@ -32,6 +32,9 @@ try:
 except ValueError:
     eq(True, True, '모르는 이름은 ValueError')
 eq(g.run_gates('__없는종목__'), 2, '_ta 파일 없으면 2')
+# v5.26 형식 게이트: source_coverage 는 warn 으로만 표시하고 실패 수에 넣지 않는다
+eq('source_coverage' in g.FORM_GATES, True, 'source_coverage 는 FORM_GATES')
+eq('verify_numbers' in g.FORM_GATES, False, '수치 게이트는 FORM_GATES 아님')
 # FAIL 줄 판정 (하이브 실측 출력)
 for line, want in [
     ('총 FAIL: 0건', False), ('  [✓ D4] Peer 테이블 0건 FAIL', False), ('총 D 블록 FAIL (B19~B22+D5+D6 포함 v5.2): 0', False),
