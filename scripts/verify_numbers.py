@@ -39,6 +39,11 @@ BAND_DISCLAIMERS = ['의미가 없', '의미 없', '쓰지 않', '쓸 수 없', 
 _DISCLAIMER_WINDOW = 60
 _METRIC_WINDOW = 60          # 밴드 표현 근처에서 지표명을 찾는 창
 _ALL_METRICS = ('PER', 'PBR')
+# 밴드 표현 옆에서 지표를 알아보는 말. '실측 순자산에 5년 밴드 하단 배수' 는 PBR 이야기인데
+# 'PBR' 세 글자가 없다고 막연한 단정으로 세면 PER 무효 종목에서 PBR 서술까지 FAIL 이 난다(SBS 실측).
+_METRIC_WORDS = {'PER': ('PER', 'P/E', 'EPS'), 'PBR': ('PBR', 'P/B', 'BPS', '순자산', '장부가')}  # '이익 배수' 는 삼성SDI 의 PBR 문장을 PER 로 잡아 뺐다
+def _metric_near(m, window):
+    return any(w in window for w in _METRIC_WORDS.get(m, (m,)))
 
 
 
@@ -113,7 +118,7 @@ def band_claims_in(text, metrics=None):
             hit = not any(dc in near for dc in BAND_DISCLAIMERS)
             if hit and metrics:
                 mnear = text[max(0, i - _METRIC_WINDOW): i + len(w) + _METRIC_WINDOW]
-                if not any(m in mnear for m in metrics) and any(m in mnear for m in others):
+                if not any(_metric_near(m, mnear) for m in metrics) and any(_metric_near(m, mnear) for m in others):
                     hit = False      # 유효한 다른 지표를 말하고 있다
             if hit:
                 asserted += 1

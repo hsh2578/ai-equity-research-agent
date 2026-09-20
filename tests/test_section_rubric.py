@@ -110,6 +110,15 @@ eq(_has_prob_impact(_HEADER_ONLY), False, "헤더만 있고 값이 없으면 미
 eq(_has_prob_impact(_WRONG_COLS), False, "확률·영향 열이 아니면 미달")
 eq(_has_prob_impact('리스크가 매우 크다'), False, "서술만으로는 미달")
 
+# ---------- v5.27 밸류 경량화: 안 쓰는 이유를 밝히면 민감도·3시나리오 통과 (SBS 실측) ----------
+_LITE = {'s07_valuation': '단일 방법이라 민감도 표와 3시나리오를 두지 않는다. DCF 는 잉여현금 부호가 바뀌어 쓰지 않는다. Peer 와 비교하면 낮다. 목표 배수를 쌓는다.'}
+_rows_lite = grade(_LITE)
+eq(st(_rows_lite, '밸류에이션', '민감도 분석'), 'PASS', "단일 방법 사유를 밝히면 민감도 PASS")
+eq(st(_rows_lite, '밸류에이션', '3시나리오'), 'PASS', "단일 방법 사유를 밝히면 3시나리오 PASS")
+_rows_none = grade({'s07_valuation': 'Peer 와 비교하면 낮다. DCF 는 쓰지 않는다.'})
+eq(st(_rows_none, '밸류에이션', '민감도 분석'), 'FAIL', "사유 없이 빠지면 여전히 FAIL")
+eq(st(_rows_none, '밸류에이션', '3시나리오'), 'FAIL', "사유 없이 빠지면 여전히 FAIL")
+
 print('=' * 62)
 if _failed:
     for label, want, got in _failed:

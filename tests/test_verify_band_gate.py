@@ -200,6 +200,20 @@ eq(is_estimate_col('2025'), False, "연도만 있으면 실적 열")
 eq(is_estimate_col('항목'), False, "머리글은 추정 열이 아니다")
 eq(is_estimate_col(None), False, "None 은 추정 열이 아니다")
 
+# --- 지표 동의어 (SBS 실측 2026-09-21): PER 무효 종목에서 '실측 순자산에 5년 밴드 하단 배수' 는 PBR 서술이다 ---
+from verify_numbers import band_claims_in  # noqa: E402
+
+eq(band_claims_in('실측 순자산에 5년 밴드 하단 배수를 준 값이다', metrics=['PER']), [],
+   "'순자산' 이 옆에 있으면 PBR 서술 -- PER 무효로 세지 않는다")
+eq(band_claims_in('BPS 50,080 x 0.25 는 5년 평균 아래다', metrics=['PER']), [],
+   "'BPS' 도 PBR 동의어")
+eq(band_claims_in('후행 PER 27배는 5년 평균 위다', metrics=['PER']), ['5년 평균'],
+   "PER 옆의 밴드 단정은 그대로 잡는다")
+eq(band_claims_in('EPS 433원 기준 5년 평균 대비 비싸다', metrics=['PER']), ['5년 평균'],
+   "'EPS' 는 PER 동의어")
+eq(band_claims_in('5년 평균 대비 싸다', metrics=['PER']), ['5년 평균'],
+   "지표를 안 밝힌 막연한 단정은 보수적으로 센다")
+
 print(f"\n{'=' * 60}")
 print(f"  verify_numbers B23 밴드 게이트 테스트: {_passed}개 통과 / {len(_failed)}개 실패")
 print(f"{'=' * 60}")

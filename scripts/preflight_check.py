@@ -105,6 +105,12 @@ def main(stock_name: str) -> int:
     peer_path = f'data/{stock_name}/_peer_snapshot.json'
     peers_json = d.get('peers', [])
     peer_snap = _load(peer_path)
+    # 해외 비교기업(v5.24 peer_snapshot_global)은 별도 파일이다. 병합하지 않으면 Disney 같은 Peer 가
+    # '부재' FAIL 이 난다(SBS 실측). flags(forward_pe_suspect·fx_missing) 있는 항목은 본문에 못 쓰므로 뺀다.
+    _gsnap = _load(f'data/{stock_name}/_peer_snapshot_global.json') or {}
+    _gpeers = {k: v for k, v in _gsnap.items() if isinstance(v, dict) and v.get('market_cap_uk') and not v.get('flags')}
+    if _gpeers:
+        peer_snap = {**_gpeers, **(peer_snap or {})}
     if peer_snap and peers_json:
         for p in peers_json:
             if p.get('highlight'):
