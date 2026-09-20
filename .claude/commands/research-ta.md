@@ -57,6 +57,16 @@ python -c "import sys; sys.path.insert(0,'scripts'); import ta_common as t; prin
 `peer_snapshot_global.py {종목} {업종키} [--peers "이름:TICKER"]`(해외 비교기업, yfinance 억원 환산 -- 국내 3사만 놓으면 배수가 어디 서는지 못 본다) · `price_cycles.py` · `driver_scan.py` · `evidence_scan.py`
 
 ## STEP 1 -- 신규 수집 (결정론)
+**v5.27 -- 한 명령으로 병렬 실행한다(사용자 2026-09-21 "수집은 병렬로 정리하면 되잖아"):**
+```bash
+python scripts/ta_collect_all.py {종목명} --peer-key {업종키} --industry-category {업종} --keywords {제품,전방,경쟁사} [--real-kis] [--dry-run]
+```
+STEP 0 의 기존 수집기 6종(KIS 레인: financial_summary·market_data·board_flow·peer_snapshot·fdr_band·volatility_beta, 순서 고정·직렬, 실전이면 65초 간격)과
+STEP 1 의 24종을 의존 순서대로 병렬(워커 6)로 돌리고 `ta/collect_log.json` 에 작업별 returncode·소요·꼬리를 남긴다. 끝에 FAIL 목록이 찍히면
+**넘어가지 말고** `--only {작업명}` 으로 단독 재실행해 원인을 본다. 의존이 실패한 작업은 `skip(dep)`. `ta_trade_stats`·`ta_customer_docs` 는 입력 json 이 있을 때만.
+한경 리포트 수집기는 기본 제외(`--hankyung` 으로 포함). 업종 category 는 `--dry-run` 전에 `ta/dart/business.txt` 1~2장을 보고 정한다.
+신세계·CJ ENM 실측 35분(메인이 하나씩 부르고 결과를 본 뒤 다음을 부름)의 원인이 직렬 호출이었다. 아래 개별 명령은 단독 재실행용으로 남긴다.
+
 업종 category·키워드는 `ta/dart/business.txt` 의 1~2장을 보고 정한다(`ta_dart_diff` 를 먼저 돌린다).
 ```bash
 python scripts/ta_dart_diff.py {종목명}
