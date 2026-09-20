@@ -3898,7 +3898,9 @@ def _generate_detailed_v3(data, output_dir):
         _row("PER (후행)", f'{_p["per"]:.1f}배' if _p.get("per") else None),
         _row("PER (TTM)", f'{_p["ttm_per"]:.1f}배' if _p.get("ttm_per") else None),
         _row("PER (12M Fwd)", f'{_p["forward_per"]:.1f}배' if _p.get("forward_per") else None),
-        _row("PBR", f'{_p["pbr"]:.2f}배' if _p.get("pbr") else None),
+        # pbr_h1 (최신 반기 BPS 기준) 가 있으면 그것이 헤드라인이고 KIS 값은 전기말로 병기한다 (research-ta 규칙 14)
+        _row("PBR (반기 실측)", f'{_p["pbr_h1"]:.2f}배' if _p.get("pbr_h1") else None),
+        _row("PBR (전기말)" if _p.get("pbr_h1") else "PBR", f'{_p["pbr"]:.2f}배' if _p.get("pbr") else None),
         _row("배당수익률", f'{_p["dividend_yield"]:.2f}%' if _p.get("dividend_yield") else None),
     ])
     rail_sc = "".join([
