@@ -44,6 +44,8 @@ for line, want in [
 ]:
     eq(g.is_fail_line(line), want, f'is_fail_line({line.strip()[:30]!r})')
 
+eq(g.build_args('check {s}', 'CJ ENM'), ['check', 'CJ ENM'], '공백 있는 종목명은 한 인자')
+eq(g.build_args('{s}_ta', 'CJ ENM'), ['CJ ENM_ta'], '접미사 포맷도 한 인자')
 print('=' * 66)
 for label, want, got in _failed:
     print(f'  [FAIL] {label}\n      기대: {want!r}\n      실제: {got!r}')

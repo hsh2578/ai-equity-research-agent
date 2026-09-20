@@ -229,6 +229,9 @@ LS = cl.build_ledger(FS, MARKET, ASO)
 near(one(LS, 'sotp_value_per_share_base')['value'], 1130e8 / 1_000_000, 'SOTP base 손계산')
 near(one(LS, 'sotp_value_per_share_bear')['value'], (1000 + 200 - 500) * 1e8 / 1_000_000, 'SOTP bear: 비상장·옵션 0')
 near(one(LS, 'sotp_upside_base')['value'], 113000 / 10000 - 1, 'SOTP upside')
+ASO3 = {**ASO, 'sotp': {**ASO['sotp'], 'scenarios': {**ASO['sotp']['scenarios'], 'adj': {**ASO['sotp']['scenarios']['base'], 'adjust': 70}}}}
+LS3 = cl.build_ledger(FS, MARKET, ASO3)
+near(one(LS3, 'sotp_value_per_share_adj')['value'], (1130 + 70) * 1e8 / 1_000_000, 'SOTP 시나리오 조정(adjust) 가산')
 # PER 시나리오: eps x per, 확률가중 (assumptions.per_scenarios / weights)
 APS = {**ASSUME, 'per_scenarios': {'bear': {'eps': 1000, 'per': 5}, 'base': {'eps': 1000, 'per': 8}, 'bull': {'eps': 1200, 'per': 10}},
        'weights': {'bear': 0.3, 'base': 0.5, 'bull': 0.2}}

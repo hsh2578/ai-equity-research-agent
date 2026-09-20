@@ -63,8 +63,13 @@ def select_gates(only):
     return [g for g in GATES if g[0] in want]
 
 
+def build_args(argfmt, stock):
+    """종목명에 공백이 있어도('CJ ENM') 한 인자로 넘긴다 -- 포맷 뒤에 split 하면 'CJ','ENM' 으로 갈려 12종이 전부 인자 오류로 죽는다(2026-09-21 실측)."""
+    return [tok.format(s=stock) for tok in argfmt.split()]
+
+
 def _run(name, argfmt, stock):
-    args = [sys.executable, os.path.join(tc.PROJECT_ROOT, 'scripts', name + '.py')] + argfmt.format(s=stock).split()
+    args = [sys.executable, os.path.join(tc.PROJECT_ROOT, 'scripts', name + '.py')] + build_args(argfmt, stock)
     p = subprocess.run(args, capture_output=True, cwd=tc.PROJECT_ROOT, env=dict(os.environ, PYTHONIOENCODING='utf-8'))
     out = (p.stdout + p.stderr).decode('utf-8', 'replace')
     lines = out.splitlines()
@@ -76,6 +81,9 @@ def _run(name, argfmt, stock):
         score = next((int(x.group(1)) for x in m if x), None)
         fails = [f'서술 품질 {score}점 < 80'] if score is not None and score < 80 else []
         summary = [f'서술 품질 {score}/100 (참고-리포트 톤 85± 정상)'] if score is not None else summary
+    if p.returncode not in (0, 1) and not fails:
+        # 인자 오류·예외로 죽은 검사기는 '통과'가 아니다 -- 마지막 줄을 FAIL 로 올린다
+        fails = [f'[ERROR] exit={p.returncode}: ' + (lines[-1].strip() if lines else '출력 없음')]
     return {'gate': name, 'exit': p.returncode, 'fail_lines': fails[:20], 'summary': summary[-1] if summary else '', 'raw_tail': lines[-3:]}
 
 

@@ -127,6 +127,7 @@ python scripts/ta_calc_ledger.py compute {종목명}
 `ta/decision_draft.md`(등급·Bear/Base/Bull 목표가·핵심 가정)와 `ta/rating_context.md`(`python scripts/decision_log.py context {종목명}` + `python scripts/rating_distribution.py` 요약)를 쓴다.
 `ta-risk-debater` 3개 병렬(stance: aggressive / neutral / conservative) → 메인 = Portfolio Manager: `ta/decision.md` (원본 PortfolioDecision 필드: rating, executive_summary, investment_thesis, price_target, time_horizon).
 목표가를 바꿨으면 assumptions 갱신 후 장부 재계산.
+시나리오가 이익·배수만 흔들고 우발·지분 시가를 고정하면 상관관계가 끊겨 상방이 체계적으로 깎인다(CJ ENM critic B8: Bull 47,000 → 60,000). Bull 에서 같이 맞는 항목(지체상금 0·PRS 정산 없음·관계사 +20%)은 `sotp.scenarios.{name}.adjust`(억원, 기본 0)로 넣는다 -- 장부 항목 `sotp_adjust_{name}` 으로 남는다.
 **결정 변경은 리스크 토론을 거친다.** critic 이 결정 수준 결함을 내면 메인이 바로 등급을 바꾸지 않고 `ta/decision_draft{N}.md`(무엇이 바뀌었고 무엇을 공격해 달라는지)를 써서 3명을 다시 부른다.
 한 방향 누적(v5.19)을 막는 장치이지만 반대 오류도 넣는다 -- 에프에스티 재토론 1 은 "12개월 목표가 관행"으로 기간 불일치를 만들었고 critic 2 가 잡았다. 그래서 규칙 9 를 장부 검사로 강제한다.
 

@@ -610,6 +610,7 @@ def build_ledger(fs, market=None, assumptions=None, fnguide=None, dart=None):
                  (f'sotp_option_prob_{name}', sc.get('option_prob'), src('sotp') + f' scenarios.{name}.option_prob'),
                  ('sotp_option_discount', so.get('option_discount'), src('sotp') + ' option_discount'),
                  ('sotp_net_debt', so.get('net_debt'), src('sotp') + ' net_debt'),
+                 (f'sotp_adjust_{name}', sc.get('adjust', 0), src('sotp') + f' scenarios.{name}.adjust (상관 조정: 우발·지분 시가 등, 억원, 기본 0)'),
                  ('shares', pos(A.get('shares')), src('shares'))]
         refs, inputs, miss = _gather(book, pairs)
         if miss:
@@ -619,13 +620,13 @@ def build_ledger(fs, market=None, assumptions=None, fnguide=None, dart=None):
         equity = (g_(f'sotp_ebitda_annual_{name}') * g_(f'sotp_multiple_{name}')
                   + g_('sotp_listed_stake') * g_('sotp_listed_mcap') + g_(f'sotp_unlisted_{name}')
                   + g_('sotp_option_ev') * g_(f'sotp_option_prob_{name}') * g_('sotp_option_discount')
-                  - g_('sotp_net_debt'))
+                  - g_('sotp_net_debt') + g_(f'sotp_adjust_{name}'))
         r = refs
         excel = (f"=({r[f'sotp_ebitda_annual_{name}']}*{r[f'sotp_multiple_{name}']}+{r['sotp_listed_stake']}*{r['sotp_listed_mcap']}"
                  f"+{r[f'sotp_unlisted_{name}']}+{r['sotp_option_ev']}*{r[f'sotp_option_prob_{name}']}*{r['sotp_option_discount']}"
-                 f"-{r['sotp_net_debt']})*100000000/{r['shares']}")
+                 f"-{r['sotp_net_debt']}+{r[f'sotp_adjust_{name}']})*100000000/{r['shares']}")
         book.add(key, 'KRW', f'SOTP {name}', equity * 1e8 / A['shares'], excel, inputs, equity_억=equity,
-                 definition='(반기 EBITDA x2 x 배수 + 상장지분율 x 시총 + 비상장 장부가 + 옵션EV x 확률 x 할인 - 순차입금) / 주식수. 억원 입력')
+                 definition='(반기 EBITDA x2 x 배수 + 상장지분율 x 시총 + 비상장 장부가 + 옵션EV x 확률 x 할인 - 순차입금 + 시나리오 조정) / 주식수. 억원 입력')
         if price and name == 'base':
             # 시장 내재 CNT 확률: 시총에서 옵션 뺀 조각들을 빼고 남은 값을 성공 시 옵션가치(EV x 할인)로 나눈다
             mcap = price * A['shares'] / 1e8
@@ -927,7 +928,8 @@ def run_compute(stock_name):
                           fnguide=ta_common.read_json(os.path.join(dd, '_fnguide.json')),
                           dart=ta_common.read_json(os.path.join(dd, 'data_dart_financials.json')))
     ledger['asof'] = ta_common.now_kst().isoformat()
-    xlsx = os.path.join(ta_common.PROJECT_ROOT, 'output', f'{stock_name}_ta', f'model_{stock_name}.xlsx')
+    out_name = stock_name.replace(' ', '')  # ta_render/generate_all 과 같은 폴더명 (CJ ENM -> CJENM_ta)
+    xlsx = os.path.join(ta_common.PROJECT_ROOT, 'output', f'{out_name}_ta', f'model_{out_name}.xlsx')
     write_xlsx(ledger, xlsx)
     ledger['xlsx'] = xlsx
     ta_common.write_json(os.path.join(ta, 'calc_ledger.json'), ledger)

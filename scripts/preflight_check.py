@@ -193,6 +193,9 @@ def main(stock_name: str) -> int:
         for k in ['target_bear', 'target_base', 'target_bull']:
             v = opinion.get(k, 0)
             if v <= 0:
+                # Bear 0 은 주주 잔여가치가 없다는 정직한 표기일 수 있다(CJ ENM 실측: 순차입 > 자산). 본문이 그렇게 밝히면 통과
+                if k == 'target_bear' and v == 0 and '주주 잔여가치 없음' in text_all:
+                    continue
                 fails.append(f'C8 {k}={v} -- 양수 의무')
         bear, base, bull = opinion.get('target_bear', 0), opinion.get('target_base', 0), opinion.get('target_bull', 0)
         if bear and base and bull:
