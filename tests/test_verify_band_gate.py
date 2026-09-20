@@ -213,6 +213,10 @@ eq(band_claims_in('EPS 433원 기준 5년 평균 대비 비싸다', metrics=['PE
    "'EPS' 는 PER 동의어")
 eq(band_claims_in('5년 평균 대비 싸다', metrics=['PER']), ['5년 평균'],
    "지표를 안 밝힌 막연한 단정은 보수적으로 센다")
+eq(band_claims_in('컨센 EPS 1,342 기준 8.9배다. 반기 실측 순자산 기준 PBR 은 0.24배이고 PBR 5년 평균치는 0.52배다', metrics=['PER']), [],
+   "한 창에 EPS 와 PBR 이 다 있으면 더 가까운 지표(PBR)가 정한다 -- SBS 실측")
+eq(band_claims_in('PBR 은 0.24배다. 후행 PER 27배는 5년 평균 위다', metrics=['PER']), ['5년 평균'],
+   "더 가까운 쪽이 PER 이면 그대로 잡는다")
 
 print(f"\n{'=' * 60}")
 print(f"  verify_numbers B23 밴드 게이트 테스트: {_passed}개 통과 / {len(_failed)}개 실패")

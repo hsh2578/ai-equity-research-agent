@@ -42,8 +42,34 @@ _ALL_METRICS = ('PER', 'PBR')
 # 밴드 표현 옆에서 지표를 알아보는 말. '실측 순자산에 5년 밴드 하단 배수' 는 PBR 이야기인데
 # 'PBR' 세 글자가 없다고 막연한 단정으로 세면 PER 무효 종목에서 PBR 서술까지 FAIL 이 난다(SBS 실측).
 _METRIC_WORDS = {'PER': ('PER', 'P/E', 'EPS'), 'PBR': ('PBR', 'P/B', 'BPS', '순자산', '장부가')}  # '이익 배수' 는 삼성SDI 의 PBR 문장을 PER 로 잡아 뺐다
-def _metric_near(m, window):
-    return any(w in window for w in _METRIC_WORDS.get(m, (m,)))
+def _metric_dist(m, window, center):
+    """창 안에서 지표 m(동의어 포함)이 밴드 표현에 가장 가까운 거리. 없으면 None."""
+    best = None
+    for w in _METRIC_WORDS.get(m, (m,)):
+        start = 0
+        while True:
+            j = window.find(w, start)
+            if j < 0:
+                break
+            d = abs(j - center)
+            best = d if best is None or d < best else best
+            start = j + len(w)
+    return best
+
+
+def _claim_is_about(metrics, others, window, center):
+    """밴드 표현이 무효 지표(metrics) 이야기인가. 가장 가까운 지표 이름이 정한다 --
+    'EPS 1,342 기준 8.9배다. 순자산 기준 PBR 은 0.24배이고 5년 평균치는' 처럼 한 창에
+    두 지표가 다 있으면 '있다/없다'로는 못 가르고 거리로 갈라야 한다(SBS 실측)."""
+    d_inv = min((d for d in (_metric_dist(m, window, center) for m in metrics) if d is not None), default=None)
+    d_oth = min((d for d in (_metric_dist(m, window, center) for m in others) if d is not None), default=None)
+    if d_inv is None and d_oth is None:
+        return True          # 지표를 안 밝힌 막연한 단정 -> 보수적으로 센다
+    if d_inv is None:
+        return False         # 유효한 다른 지표 이야기
+    if d_oth is None:
+        return True
+    return d_inv <= d_oth
 
 
 
@@ -117,9 +143,10 @@ def band_claims_in(text, metrics=None):
             near = text[max(0, i - _DISCLAIMER_WINDOW): i + len(w) + _DISCLAIMER_WINDOW]
             hit = not any(dc in near for dc in BAND_DISCLAIMERS)
             if hit and metrics:
-                mnear = text[max(0, i - _METRIC_WINDOW): i + len(w) + _METRIC_WINDOW]
-                if not any(_metric_near(m, mnear) for m in metrics) and any(_metric_near(m, mnear) for m in others):
-                    hit = False      # 유효한 다른 지표를 말하고 있다
+                _ws = max(0, i - _METRIC_WINDOW)
+                mnear = text[_ws: i + len(w) + _METRIC_WINDOW]
+                if not _claim_is_about(metrics, others, mnear, i - _ws):
+                    hit = False      # 더 가까운 지표가 유효한 다른 지표다
             if hit:
                 asserted += 1
             start = i + len(w)
