@@ -286,6 +286,7 @@ with tempfile.TemporaryDirectory() as td:
         raises(ValueError, lambda: tc.manifest_update('종목', 'step1', 'bogus'),
                '허용되지 않은 status 는 ValueError')
 
+        manifest_path = os.path.join(tc.ta_dir('종목'), 'manifest.json')
         m1 = tc.manifest_update('종목', 'collect', 'ok', count=5)
         eq(m1['steps']['collect']['status'], 'ok', 'status 저장')
         eq(m1['steps']['collect']['count'], 5, '추가 detail 저장')
@@ -296,7 +297,17 @@ with tempfile.TemporaryDirectory() as td:
         eq(m2['steps']['collect']['status'], 'ok', '이전 step 은 그대로 남는다')
         eq(m2['steps']['verify']['status'], 'failed', '새 step 상태 반영')
 
-        manifest_path = os.path.join(tc.ta_dir('종목'), 'manifest.json')
+        # 병렬 수집(ta_collect_all)에서 프로세스 여럿이 동시에 갱신해도 step 이 사라지지 않는다 (락 파일)
+        import subprocess as _sp
+        _code = ("import sys; sys.path.insert(0, %r); import ta_common as tc; tc.PROJECT_ROOT = %r; "
+                 "tc.manifest_update('종목', sys.argv[1], 'ok')" % (os.path.join(orig_root, 'scripts'), td))
+        procs = [_sp.Popen([sys.executable, '-c', _code, f'par{i}']) for i in range(8)]
+        for pr in procs:
+            pr.wait()
+        m3 = tc.read_json(manifest_path)
+        eq(all(f'par{i}' in m3['steps'] for i in range(8)), True, '8개 프로세스 동시 갱신 -- step 8개 전부 남는다')
+        eq(os.path.exists(manifest_path + '.lock'), False, '락 파일은 끝나면 지워진다')
+
         on_disk = json.load(open(manifest_path, encoding='utf-8'))
         eq(on_disk['steps']['verify']['reason'], 'timeout', '파일에도 원자적으로 반영된다')
     finally:

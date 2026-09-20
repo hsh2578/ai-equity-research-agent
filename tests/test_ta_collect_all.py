@@ -41,11 +41,14 @@ eq('--no-hankyung' in c.build_tasks('CJ ENM', '035760', opts(hankyung=True))[nam
 eq(byn['peer_snapshot']['argv'], ['peer_snapshot.py', 'CJ ENM', 'media'], '업종키 전달')
 eq(byn['event_study_2']['deps'], ['news_window'], '이벤트 스터디 2회차는 뉴스 창 뒤')
 eq(byn['company_voice']['deps'], ['kind_ir', 'news_body'], 'company_voice 는 IR + 뉴스 본문 뒤')
+eq(byn['news_body']['deps'], ['news_window'], 'news_body 와 news_window 는 같은 파일을 쓰므로 직렬')
+eq(byn['company_ir']['deps'], ['kind_ir'], 'company_ir 와 kind_ir 는 같은 index.json 을 쓰므로 직렬')
+eq(set(byn['event_study']['deps']) >= {'dart_filings', 'price_cycles'}, True, 'event_study 는 공시·사이클 파일 뒤')
 eq(byn['trade_stats']['needs'].endswith('trade_query.json'), True, 'trade_stats 는 입력 파일 있을 때만')
 eq('financial_summary' in byn['build_snapshot']['deps'], True, 'build_snapshot 은 KIS 레인 뒤')
 
 S = c.select(T, ['event_study_2'], None)
-eq([t['name'] for t in S], ['news', 'event_study', 'news_window', 'event_study_2'], '--only 는 의존을 자동 포함하고 순서 유지')
+eq([t['name'] for t in S], ['dart_filings', 'price_cycles', 'news', 'event_study', 'news_window', 'event_study_2'], '--only 는 의존을 자동 포함하고 순서 유지')
 S2 = c.select(T, None, ['reports', 'evidence_scan'])
 eq('reports' in [t['name'] for t in S2], False, '--skip 제외')
 try:

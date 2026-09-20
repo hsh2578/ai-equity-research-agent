@@ -7,7 +7,9 @@
 메인이 수집기 12개를 하나씩 부르고 결과를 본 뒤 다음을 부르던 것(신세계·CJ ENM 실측 35분)을 한 명령으로 바꾼다.
 직렬로 남는 것은 둘뿐이다: ① KIS 를 치는 스크립트(토큰 발급 분당 1회 -- 실전 전환 시 403)는 한 레인에서 순서대로,
 ② 의존이 있는 것(뉴스 -> 이벤트 스터디 -> 뉴스 창 -> 이벤트 스터디 재실행, DART 전문 -> dart_diff·driver_scan,
-리포트+DART -> evidence_scan, IR+뉴스 본문 -> company_voice, 전부 -> build_snapshot·plan_agents).
+리포트+DART -> evidence_scan, IR+뉴스 본문 -> company_voice, 전부 -> build_snapshot·plan_agents),
+③ 같은 파일을 고쳐 쓰는 것(news_window·news_body 는 news_relevant.json, kind_ir·company_ir 는 ir_materials/index.json)은 앞뒤로.
+manifest.json 은 19개 스크립트가 같이 쓰므로 ta_common.manifest_update 에 프로세스 간 락을 넣었다.
 실패는 삼키지 않는다 -- 각 작업의 returncode·소요·꼬리를 `data/{종목}/ta/collect_log.json` 에 남기고 끝에 FAIL 목록을 찍는다.
 의존이 실패하면 그 뒤는 `skip(dep)` 으로 표시한다(조용한 실패 패턴 차단).
 """
@@ -59,21 +61,21 @@ def build_tasks(stock, code, opts):
     add('wisereport', ['wisereport_consensus.py', stock, code])
     add('price_cycles', ['price_cycles.py', stock, code])
     add('news', ['ta_collect_news.py', stock])
-    add('calendar', ['ta_calendar.py', stock])
     add('reports', ['ta_collect_reports.py', stock] + ind + kw + hk)
     add('macro', ['macro_data.py', 'KR', '--out', os.path.join(ta, 'macro.json')])
     add('kind_ir', ['ta_kind_ir.py', stock])
-    add('company_ir', ['ta_company_ir.py', stock])
     add('peer_global', ['peer_snapshot_global.py', stock] + ([opts.peer_key] if opts.peer_key else []) + gpeers)
     add('trade_stats', ['ta_trade_stats.py', stock], needs=os.path.join(ta, 'trade_query.json'))
     add('customer_docs', ['ta_customer_docs.py', stock], needs=os.path.join(ta, 'customers.json'))
     # -- 의존 있음
     add('dart_diff', ['ta_dart_diff.py', stock], deps=['dart_full'])
     add('driver_scan', ['driver_scan.py', stock], deps=['dart_full'])
-    add('event_study', ['ta_event_study.py', stock], deps=['news'])
+    add('event_study', ['ta_event_study.py', stock], deps=['news', 'dart_filings', 'price_cycles'])  # 공시·사이클 파일을 읽는다
     add('news_window', ['ta_news_window.py', stock], deps=['event_study'])
     add('event_study_2', ['ta_event_study.py', stock], deps=['news_window'])
-    add('news_body', ['ta_news_body.py', stock], deps=['news'])
+    add('news_body', ['ta_news_body.py', stock], deps=['news_window'])  # 둘 다 news_relevant.json 을 고쳐 쓴다 -> 직렬
+    add('calendar', ['ta_calendar.py', stock], deps=['news_window', 'dart_filings', 'financial_summary'])
+    add('company_ir', ['ta_company_ir.py', stock], deps=['kind_ir'])  # 둘 다 ir_materials/index.json 에 쓴다 -> 직렬
     add('evidence_scan', ['evidence_scan.py', stock], deps=['dart_full', 'reports'])
     add('company_voice', ['ta_company_voice.py', stock, '--irtv'], deps=['kind_ir', 'news_body'])
     add('build_snapshot', ['build_snapshot.py', stock], deps=['financial_summary', 'fdr_band', 'peer_snapshot', 'dart_full', 'wisereport'])

@@ -407,10 +407,32 @@ def manifest_update(stock_name, step, status, **detail):
     if status not in _MANIFEST_STATUSES:
         raise ValueError(f"status 는 {_MANIFEST_STATUSES} 중 하나여야 함: {status!r}")
     path = os.path.join(ta_dir(stock_name), 'manifest.json')
-    manifest = read_json(path, {}) or {}
-    steps = manifest.setdefault('steps', {})
-    entry = {'status': status, 'at': now_kst().isoformat()}
-    entry.update(detail)
-    steps[step] = entry
-    write_json(path, manifest)
+    # ta_collect_all 이 수집기 19개를 병렬로 돌리면 read-modify-write 가 겹쳐 step 이 사라진다 -> 프로세스 간 잠금(O_EXCL 락 파일)
+    lock = path + '.lock'
+    import time as _time
+    t0 = _time.time()
+    while True:
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            break
+        except FileExistsError:
+            if _time.time() - t0 > 30:  # 죽은 프로세스가 남긴 락
+                try:
+                    os.remove(lock)
+                except OSError:
+                    pass
+            _time.sleep(0.05)
+    try:
+        manifest = read_json(path, {}) or {}
+        steps = manifest.setdefault('steps', {})
+        entry = {'status': status, 'at': now_kst().isoformat()}
+        entry.update(detail)
+        steps[step] = entry
+        write_json(path, manifest)
+    finally:
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
     return manifest
