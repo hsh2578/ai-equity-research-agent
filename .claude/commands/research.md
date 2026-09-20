@@ -1798,7 +1798,12 @@ v5.10 이 **무엇을 수집하는가**를 고쳤다면, v5.11 은 **모은 것�
 ```bash
 python scripts/fetch_broker_reports.py {종목명} --category 기업 --months 6
 python scripts/fetch_broker_reports.py {종목명} --category 산업 --keyword {업종} --months 6
+python scripts/ta_company_ir.py {종목명}            # (v5.24) 회사 홈페이지 IR 덱 최근 2분기도 정독 대상
 ```
+
+**(v5.24) "정독"의 정의는 `docs/research-ta/reading_note_format.md` 를 따른다** -- 종목 3~5편(+가장 긴 편)·산업 2~3편·IR 덱 2분기를 메인이 원문
+그대로 읽고, 편당 노트(다섯 질문: 주장 / 논리 / 인정한 반론 / 확인 방법 / 직전 대비 변경)와 밸류 방법표를 남긴 뒤 투자포인트·산업·밸류를 쓴다.
+요약·grep 발췌로 대체하지 않는다. 블라인드 판정 실측(HD현대중공업, 위치 교차 2회): 정독 뒤 판 5축 / 전 판 1축.
 
 이 도구는 이미 있었는데 `/wf-report` 에만 의무였고 `/research` 에는 없었다.
 그래서 우리는 **컨센 평균값만 쓰고 개별 하우스의 추정과 그 근거를 읽지 않았다.**
