@@ -91,6 +91,23 @@ def parse_briefs_text(files):
     return occ
 
 
+# ==================== 정독 노트 (v5.26-c) ====================
+CORE_SECTIONS = ('s02_thesis_catalysts', 's03_company_overview', 's04_industry_competition')
+_NOTE_ALIAS = {'s02_investment_points': 's02_thesis_catalysts', 's04_industry': 's04_industry_competition'}
+
+
+def parse_notes(notes_dir):
+    """ta/notes/*.md (앞에 _ 가 붙은 요약 파일 제외) -> id 'note:{stem}' 마다 필수 1건.
+    노트 본문은 읽지 않는다 -- 정독한 리포트 한 편이 본문 어딘가에 논리로 들어갔는지만 묻는다."""
+    occ = {}
+    for path in sorted(glob.glob(os.path.join(notes_dir, '*.md'))):
+        stem = os.path.splitext(os.path.basename(path))[0]
+        if stem.startswith('_'):
+            continue
+        occ[f'note:{stem}'] = [{'required': True, 'file': path}]
+    return occ
+
+
 def parse_briefs(paths):
     files = {}
     for p in paths:
@@ -135,8 +152,19 @@ def _evaluate_one(item_id, coverage_map, sections):
 
 
 def _prefix(item_id):
+    if item_id.startswith('note:'):
+        return 'note'
     m = re.match(r'^[A-Z]{1,2}', item_id)
     return m.group(0) if m else '?'
+
+
+def note_core_stats(items):
+    """종목·산업 리포트 노트(ir_ 제외) 가운데 s02·s03·s04 에 착지한 수. IR 덱 노트는 s05·s10 이 정상이라 뺀다."""
+    reports = [it for it in items if it['id'].startswith('note:') and not it['id'].startswith('note:ir_')]
+    in_core = [it for it in reports if it['status'] == 'PASS' and it['reason'] == 'covered'
+               and _NOTE_ALIAS.get(it['section'], it['section']) in CORE_SECTIONS]
+    return {'report_notes': len(reports), 'in_core': len(in_core),
+            'outside_core': [it['id'] for it in reports if it not in in_core and it['status'] == 'PASS' and it['reason'] == 'covered']}
 
 
 def evaluate(occurrences, coverage_map, sections):
@@ -190,8 +218,10 @@ def evaluate(occurrences, coverage_map, sections):
             bucket['failed'] += 1
 
     fail_items = sum(1 for it in items if it['status'] == 'FAIL')
+    notes = note_core_stats(items)
 
     return {
+        'notes': notes,
         'required': len(required_pipeline_ids),
         'covered': covered,
         'excluded': excluded,
@@ -209,6 +239,11 @@ def _print_report(report):
         print(f"  [{it['status']}] {it['id']} {it['reason']}")
     print(f"  요약: 필수 {report['required']} / 반영 {report['covered']} / "
           f"제외 {report['excluded']} / 실패 {report['failed']}")
+    n = report.get('notes') or {}
+    if n.get('report_notes'):
+        mark = 'ok' if n['in_core'] * 2 >= n['report_notes'] else 'WARN'
+        print(f"  [{mark}] 정독 리포트 노트 {n['report_notes']}편 중 산업·기업·투자포인트(s02·s03·s04) 착지 {n['in_core']}편"
+              + (f" -- 밖: {', '.join(n['outside_core'])}" if n['outside_core'] else ''))
 
 
 def main(argv=None):
@@ -220,6 +255,7 @@ def main(argv=None):
 
     brief_paths = sorted(glob.glob(os.path.join(tc.ta_dir(a.stock), 'brief_*.md')))
     occurrences = parse_briefs(brief_paths)
+    occurrences.update(parse_notes(os.path.join(tc.ta_dir(a.stock), 'notes')))  # v5.26-c 정독 노트도 필수 ID
 
     coverage_map_path = a.map or os.path.join(tc.ta_dir(a.stock), 'coverage_map.json')
     coverage_map = tc.read_json(coverage_map_path, default={}) or {}
@@ -230,7 +266,8 @@ def main(argv=None):
     sections = analysis.get('sections', {}) or {}
 
     report = evaluate(occurrences, coverage_map, sections)
-    print(f'[ta_coverage_check] {a.stock} -- brief {len(brief_paths)}개, ID {len(occurrences)}개')
+    n_notes = sum(1 for k in occurrences if k.startswith('note:'))
+    print(f'[ta_coverage_check] {a.stock} -- brief {len(brief_paths)}개, 정독 노트 {n_notes}편, ID {len(occurrences)}개')
     _print_report(report)
 
     out_path = os.path.join(tc.ta_dir(a.stock), 'coverage_report.json')

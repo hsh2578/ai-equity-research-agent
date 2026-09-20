@@ -205,6 +205,26 @@ with tempfile.TemporaryDirectory() as td:
     finally:
         tc.PROJECT_ROOT = orig_root
 
+# ==================== 정독 노트 반영 (v5.26-c) ====================
+with tempfile.TemporaryDirectory() as d:
+    nd = os.path.join(d, 'notes'); os.makedirs(nd)
+    for stem in ('nv_1', 'nv_2', 'ir_2026Q2', '_summary'):
+        open(os.path.join(nd, stem + '.md'), 'w', encoding='utf-8').write('# ' + stem)
+    occ = cc.parse_notes(nd)
+    eq(sorted(occ), ['note:ir_2026Q2', 'note:nv_1', 'note:nv_2'], '노트 파일 = 필수 ID, _summary 제외')
+    secs = {'s04_industry_competition': '중국 면세 회복이 더디다는 것이 시장의 전제였는데 관세청 수치는 반대로 간다.',
+            's07_valuation': '증권사 12곳의 배수 근거는 대부분 과거 평균이다.',
+            's10_earnings_consensus': '회사 덱은 2분기 면세 마진 급락의 사유를 적지 않았다.'}
+    cmap = {'note:nv_1': {'section': 's04_industry_competition', 'quote': '중국 면세 회복이 더디다는 것이 시장의 전제였는데'},
+            'note:nv_2': {'section': 's07_valuation', 'quote': '증권사 12곳의 배수 근거는 대부분 과거 평균이다'},
+            'note:ir_2026Q2': {'section': 's10_earnings_consensus', 'quote': '회사 덱은 2분기 면세 마진 급락의 사유를 적지 않았다'}}
+    rep_ = cc.evaluate(occ, cmap, secs)
+    eq(rep_['fail_items'], 0, '세 노트 모두 본문 문장으로 반영 -> 0 FAIL')
+    eq(rep_['notes'], {'report_notes': 2, 'in_core': 1, 'outside_core': ['note:nv_2']}, 'IR 노트 제외, 리포트 노트 2편 중 s04 착지 1편')
+    rep2 = cc.evaluate(occ, {k: v for k, v in cmap.items() if k != 'note:nv_1'}, secs)
+    eq([it['id'] for it in rep2['items'] if it['status'] == 'FAIL'], ['note:nv_1'], '지도에 없는 노트는 FAIL(missing)')
+    eq(cc._prefix('note:nv_1'), 'note', 'by_prefix 버킷 note')
+
 print('=' * 66)
 if _failed:
     for label, want, got in _failed:
