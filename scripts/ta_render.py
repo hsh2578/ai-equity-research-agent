@@ -133,6 +133,24 @@ def _render_png(pdf_path, ta_output_dir, png_pages_spec):
 
 # ==================== 핵심 ====================
 
+
+def _copy_references(stock_name, ta_output_dir):
+    """정독한 원문(증권사 리포트 PDF·회사 IR 덱)을 output/{종목}_ta/references/ 에 같이 둔다 (v5.25).
+    사용자가 output 폴더만 열어 보고 "리포트가 없다"고 한 것이 계기 -- data/{종목}/ta/ 는 작업 폴더라 찾기 어렵다."""
+    ta = tc.ta_dir(stock_name)
+    pairs = [('reports/company', 'references/company'), ('reports/industry', 'references/industry'), ('ir_materials', 'references/ir')]
+    n = 0
+    for src_rel, dst_rel in pairs:
+        src = os.path.join(ta, src_rel)
+        if not os.path.isdir(src):
+            continue
+        dst = os.path.join(ta_output_dir, dst_rel)
+        os.makedirs(dst, exist_ok=True)
+        for fn in os.listdir(src):
+            if fn.lower().endswith('.pdf'):
+                shutil.copy2(os.path.join(src, fn), os.path.join(dst, fn)); n += 1
+    return n
+
 def render(stock_name, analysis_path=None, runner=None, png_pages='1,auto'):
     """generate_all.py 를 안전하게 실행하고 결과를 output/{종목}_ta/ 에 남긴다.
     output/{종목}/ 은 실행 전 상태로 항상 복원된다 (finally). 반환값은
@@ -200,6 +218,7 @@ def render(stock_name, analysis_path=None, runner=None, png_pages='1,auto'):
         if os.path.isdir(backup_dir):
             shutil.rmtree(backup_dir)
 
+    n_refs = _copy_references(stock_name, ta_output_dir)
     pdf_path = os.path.join(ta_output_dir, f'report_{out_name}_상세.pdf')
     pages, blank_pages, png_list, png_error = _render_png(pdf_path, ta_output_dir, png_pages)
 
@@ -212,6 +231,7 @@ def render(stock_name, analysis_path=None, runner=None, png_pages='1,auto'):
         'pages': pages,
         'blank_pages': blank_pages,
         'png': png_list,
+        'references': n_refs,
     }
     if runner_exception:
         render_result['runner_exception'] = runner_exception
