@@ -28,16 +28,17 @@
 10. **요약은 ■ 3개 고정** (IR협의회 22편 전부): ① 회사가 무엇을 하고 최근 실적 사실(반기·분기 수치) ② 성장 동인 하나를 회사 밖 실명·수치로 ③ 앞으로의 일정·판단·밸류 위치 한 줄. `> **한 줄:**` 3개가 이 순서다(게이트 G4).
 11. **산업현황은 회사 밖 재료로만 쓰고 마지막 한 문단에서 동사로 착지한다.** 분량 20%+, 회사 밖 문단 90%+, 출처 3종+(관세청·협회·SEMI·고객사 10-K·기업설명회), 뉴스 인용 2회 이하(G1~G3, G6). 재료는 `ta/trade_stats.json`, `ta/customer_docs/`, `ta/company_voice.md`.
 12. **밸류는 밴드+Peer 로 "지금 위치"까지만 본문(s07)에, 등급·목표가·시나리오는 s07 끝 `#### 판단` 블록 하나에.** s01·s02 에는 SOTP·시나리오·DCF 를 쓰지 않는다(G5). IR협의회는 등급이 없지만 이 프로젝트는 실제 투자용이라 판단 블록을 둔다(사용자 결정 2026-09-17).
+    **v5.27 밸류 경량화(사용자 2026-09-21 "밸류에이션은 그렇게 중요하다고 생각 안 해" → 경량화 선택)**: 판단 블록은 **단일 방법 산식 한 문단 + 등급·Bear/Bull 조건 한 줄씩**으로 끝낸다. 3시나리오 확률가중·민감도 표·RIM·역DCF·부문별 배수 비교·앵커 표는 쓰지 않는다(결론을 바꾸는 하나만 한 줄). 장부는 그 산식과 밴드·Peer 위치만 계산한다. CJ ENM 실측: critic 20건 중 11건·재토론 2회·재대조 신규 4건이 전부 밸류였고 그 절차가 67분(전체의 절반)이었는데, 사용자가 중요하다고 한 산업·기업·투자포인트 지적은 0건이었다.
 
 ## 실행 모드 -- lite 가 기본값 후보 (2026-09-18 HD현대중공업 실측)
 | | lite | full |
 |---|---|---|
 | 수집(STEP 0~1) | 전부 | 전부 |
 | 분석가 | 산업+거시 1명(웹 검색 있는 역할만) | 자료량 배정(CJ 16명) |
-| 토론·리스크 토론 | 없음 | bull/bear 4 + 리스크 3 |
+| 토론·리스크 토론 | 없음 (v5.27: critic 뒤 재토론도 없음) | bull/bear 4 + 리스크 3 |
 | 작성 | 메인 단독 (수집물 직접 정독) | 메인 단독 (brief 색인) |
 | 반영 게이트 | 산업 brief 필수 ID 만 | 전 brief 필수 ID |
-| critic | 1회 + 재개 대조 | 1회 + 재개 대조 |
+| critic | 1회, 재대조 없음(v5.27) -- 대조 파일은 `ta/sections/s02·s03·s04` + `ta/notes/` + `ta/decision.md`(analysis json 전체 대신, 논리를 보게) / 잔재는 메인이 규칙 14 grep | 1회 + 재개 대조 |
 | 실측 | HD현대중공업: PDF 까지 50분, 에이전트 5회(분석가 1·critic 1·재토론 2·재대조 1), 약 80만 토큰 | CJ프레시웨이: 3시간+, 27회 |
 근거: 에프에스티 lite 가 full 에 3:2 로 근소 열세, CJ 결정 오류를 잡은 것은 팀이 아니라 critic. 자료가 많은 대형주·핵심 포지션이면 full.
 ⚠️ lite 에서 critic 이 잡은 것은 **메인이 혼자 만든 밸류 산식의 기간 불일치**였다(HD: FY26E 배수 15.3 을 FY27E EPS 에 곱해 목표가 +10.6% 전부가 연도 롤포워드, KIS 롤링 12.87 미인용, RIM 63%가 영구 TV, 요구 영구 ROE 40.8%). 규칙 9 를 적어 두고도 어겼으므로 **배수 라벨에 기준연도(FY26E 선행/12개월 롤링/후행 12개월)를 반드시 붙이고, 목표가 표에 "요구 영구 ROE" 열과 자본효율 앵커 범위(잔여가치 0·g 0·ke 감도·컨센 BPS)를 함께 둔다.** 결정 수준이면 재토론(보수형+공격형) -- HD 는 둘이 같은 사실에서 SELL 405k / HOLD 520k 로 갈렸고 PM 이 493k 로 착지했다.
@@ -124,6 +125,7 @@ python scripts/ta_calc_ledger.py compute {종목명}
 **근거가 팽팽하면 Hold** -- 방향을 억지로 만들지 않는다(원본 규칙 + v5.5 규칙 6).
 
 ## STEP 5 -- 리스크 토론 → 최종 결정
+**v5.27 lite: 리스크 토론·재토론을 부르지 않는다.** 메인이 `ta/decision.md`(rating·executive_summary·investment_thesis·price_target 산식 한 문단·time_horizon·등급 변경 조건)를 바로 쓴다. critic 이 결정 수준 결함을 내면 메인이 산식을 고치고 decision.md 에 사유 한 줄을 남긴다. 아래 절차는 **full 전용**.
 `ta/decision_draft.md`(등급·Bear/Base/Bull 목표가·핵심 가정)와 `ta/rating_context.md`(`python scripts/decision_log.py context {종목명}` + `python scripts/rating_distribution.py` 요약)를 쓴다.
 `ta-risk-debater` 3개 병렬(stance: aggressive / neutral / conservative) → 메인 = Portfolio Manager: `ta/decision.md` (원본 PortfolioDecision 필드: rating, executive_summary, investment_thesis, price_target, time_horizon).
 목표가를 바꿨으면 assumptions 갱신 후 장부 재계산.
@@ -202,7 +204,7 @@ python scripts/preflight_check.py {종목명}_ta  ...    # 기존 게이트는 a
 python scripts/verify_numbers.py / verify_style.py / verify_facts.py / verify_tone.py / verify_content.py / source_coverage.py / section_rubric.py
 ```
 기존 검증기가 `scripts/analysis_{종목}.json` 경로를 고정으로 읽으면, 임시로 `_ta` 파일을 그 이름으로 복사해 돌린 뒤 **원본을 즉시 복원**한다(원본 백업 확인 후).
-그 다음 `report-critic` **1회**(호출 프롬프트는 기존 규칙 그대로 한 문장, 가이드 추가 금지). 파일 경로에는 analysis json 과 함께 `ta/decision.md` 를 준다 -- 에프에스티 critic 2 는 결정 이력을 읽고서 목표가가 매번 현재가 +6~10% 에 붙는 앵커링을 잡았다. 지적을 반영한 뒤에는 새 critic 을 부르지 않고 **같은 에이전트를 SendMessage 로 재개해 "지적한 항목만 고쳐졌는지 원문과 대조해라"** 를 시킨다(사용자 결정 2026-09-18: 2회차는 비용 대비 효과가 작다 -- CJ프레시웨이 1회차 20만 토큰으로 22건, 그중 A급 5건이 판정·게이트·토론이 전부 놓친 것이었다). 결정 수준 지적(현금흐름 부호 같은 것)이면 반영 전에 리스크 재토론(보수형+공격형, 방향 균형)을 거친다.
+그 다음 `report-critic` **1회**(호출 프롬프트는 기존 규칙 그대로 한 문장, 가이드 추가 금지). **v5.27 lite: 파일 경로는 `ta/sections/s02_*.md`·`s03_*.md`·`s04_*.md` + `ta/notes/` + `ta/decision.md`** -- analysis json 전체를 주면 critic 은 숫자가 있는 밸류로 쏠린다(CJ ENM 20건 중 11건). 재대조는 부르지 않고 반영 뒤 규칙 14 grep(바꾼 값·그 값의 조건·같은 지표의 다른 정의)으로 잔재를 본다. 아래 "같은 에이전트 재개" 절차는 full 전용. (full) 파일 경로에는 analysis json 과 함께 `ta/decision.md` 를 준다 -- 에프에스티 critic 2 는 결정 이력을 읽고서 목표가가 매번 현재가 +6~10% 에 붙는 앵커링을 잡았다. 지적을 반영한 뒤에는 새 critic 을 부르지 않고 **같은 에이전트를 SendMessage 로 재개해 "지적한 항목만 고쳐졌는지 원문과 대조해라"** 를 시킨다(사용자 결정 2026-09-18: 2회차는 비용 대비 효과가 작다 -- CJ프레시웨이 1회차 20만 토큰으로 22건, 그중 A급 5건이 판정·게이트·토론이 전부 놓친 것이었다). 결정 수준 지적(현금흐름 부호 같은 것)이면 반영 전에 리스크 재토론(보수형+공격형, 방향 균형)을 거친다.
 **critic·토론 반영 후 s01·s02 를 다시 잰다**(절대 규칙 8). 검증 루프는 밸류를 깊게 만드는 방향이라 요약이 산식으로 채워진다. 넘으면 사건 서술로 되돌린다:
 ```bash
 python - <<'EOF'
