@@ -73,7 +73,10 @@ def main(argv=None):
             text = '\n'.join(pg.get_text() for pg in doc)
             with open(txt, 'w', encoding='utf-8') as f:
                 f.write(text)
-            index.append({'date': r['date'], 'file': os.path.basename(pdf), 'txt': os.path.basename(txt), 'pages': len(doc), 'chars': len(text), 'status': 'ok'})
+            from ta_pdf_tables import write_tables_md  # v5.26: 괘선 표 -> .tables.md
+            n_tables, tables_err = write_tables_md(pdf)
+            index.append({'date': r['date'], 'file': os.path.basename(pdf), 'txt': os.path.basename(txt), 'pages': len(doc), 'chars': len(text), 'status': 'ok',
+                          'tables': n_tables, 'tables_err': tables_err})
         except Exception as e:
             index.append({'date': r['date'], 'file': r['filename'], 'status': 'failed', 'reason': repr(e)[:150]})
     write_json(os.path.join(out_dir, 'index.json'), {'asof': today.isoformat(), 'code': code, 'items': index})

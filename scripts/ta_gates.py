@@ -34,12 +34,13 @@ GATES = [
     ('source_coverage', '{s}', True),
     ('section_rubric', '{s}', True),
     ('verify_style', '{s}', True),
+    ('ta_number_trace', '{s}', False),  # v5.26 숫자 근거 역추적 (warn)
 ]
 # 형식 게이트: FAIL 이 나도 'warn' 으로 표시하고 실패 수에 넣지 않는다 (v5.26, 2026-09-21).
 # source_coverage 는 "사업보고서에 있는데 본문이 안 쓴 것" 을 FAIL 로 내 본문을 사업보고서 쪽으로 미는 유일한 검사였다(신세계 실측).
-FORM_GATES = {'source_coverage'}
-_FAIL_RE = re.compile(r'\[(?:✗|X|FAIL|ERROR)[ \]]|\[ERROR\]|Traceback|총 FAIL: ?[1-9]|(?<!0건 )FAIL [1-9]\d* ?건|/ FAIL [1-9]|FAIL: [1-9]\d* /')
-_SUMMARY_RE = re.compile(r'총 FAIL|FAIL \d+건|/ FAIL|FAIL 0건|점수|통과|합계|calc_check|_gate\]|coverage_check\]|preflight')
+FORM_GATES = {'source_coverage', 'ta_number_trace'}
+_FAIL_RE = re.compile(r'\[(?:✗|X|FAIL|ERROR)[ \]]|\[ERROR\]|Traceback|총 FAIL: ?[1-9]|(?<!0건 )FAIL [1-9]\d* ?건|/ FAIL [1-9]|FAIL: [1-9]\d* /|근거 없음 [1-9]')
+_SUMMARY_RE = re.compile(r'총 FAIL|FAIL \d+건|/ FAIL|FAIL 0건|점수|통과|합계|calc_check|_gate\]|coverage_check\]|preflight|number_trace\]')
 _SCORE_RE = re.compile(r'점수[^:]*:\s*(\d+)/100')
 
 

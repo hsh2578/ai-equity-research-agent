@@ -333,7 +333,10 @@ def save_pdf(content, out_dir, name, png_pages):
         f.write(text)
     n = len(doc)
     doc.close()
-    return {'pages': n, 'chars': chars, 'txt': os.path.basename(txt), 'png_dir': os.path.basename(png_dir) if png_dir else ''}
+    from ta_pdf_tables import write_tables_md  # v5.26: 괘선 표 -> .tables.md
+    n_tables, tables_err = write_tables_md(pdf)
+    return {'pages': n, 'chars': chars, 'txt': os.path.basename(txt), 'png_dir': os.path.basename(png_dir) if png_dir else '',
+            'tables': n_tables, 'tables_err': tables_err}
 
 
 def _save_registry(stock, urls, auto):

@@ -382,8 +382,12 @@ def save_report(id_, url, out_dir, download=None, extract=None):
         f.write(content)
     with open(txt_path, 'w', encoding='utf-8') as f:
         f.write(text)
+    # v5.26: 괘선 표는 행·열 그대로 {id}.tables.md 로 (fitz 는 표를 한 셀 한 줄로 푼다). 실패해도 수집은 계속, 사유는 남긴다
+    from ta_pdf_tables import write_tables_md
+    n_tables, tables_err = write_tables_md(pdf_path)
     return {'pages': pages, 'chars': len(text), 'too_short': len(text) < TOO_SHORT_CHARS,
-            'pdf': pdf_path, 'txt': txt_path, 'sha256': hashlib.sha256(content).hexdigest()}, None
+            'pdf': pdf_path, 'txt': txt_path, 'sha256': hashlib.sha256(content).hexdigest(),
+            'tables': n_tables, 'tables_err': tables_err}, None
 
 
 # ==================== 오케스트레이션 ====================
