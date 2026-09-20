@@ -12,6 +12,7 @@ import io
 import os
 import re
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import sys
 
@@ -87,7 +88,11 @@ def _run(name, argfmt, stock):
     return {'gate': name, 'exit': p.returncode, 'fail_lines': fails[:20], 'summary': summary[-1] if summary else '', 'raw_tail': lines[-3:]}
 
 
-def run_gates(stock, only=None):
+# preflight 는 analysis 파일을 고쳐 쓸 수 있어(em-dash 치환·control char fix) 먼저 혼자 돌리고, 나머지는 읽기만 하므로 병렬.
+_WRITES_ANALYSIS = {'preflight_check'}
+
+
+def run_gates(stock, only=None, workers=6):
     gates = select_gates(only)
     ta = os.path.join(tc.PROJECT_ROOT, 'scripts', f'analysis_{stock}_ta.json')
     base = os.path.join(tc.PROJECT_ROOT, 'scripts', f'analysis_{stock}.json')
@@ -101,8 +106,14 @@ def run_gates(stock, only=None):
         shutil.copy2(ta, base)
     results = []
     try:
-        for name, argfmt, _ in gates:
-            r = _run(name, argfmt, stock)
+        first = [g for g in gates if g[0] in _WRITES_ANALYSIS]
+        rest = [g for g in gates if g[0] not in _WRITES_ANALYSIS]
+        done = {g[0]: _run(g[0], g[1], stock) for g in first}
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:  # 12종 직렬 5~6분 -> 병렬 2분 안팎 (v5.27)
+            for g, r in zip(rest, pool.map(lambda g: _run(g[0], g[1], stock), rest)):
+                done[g[0]] = r
+        for name, argfmt, _ in gates:  # 출력·저장은 GATES 순서
+            r = done[name]
             results.append(r)
             r['form'] = name in FORM_GATES
             mark = ('warn' if r['form'] else 'FAIL') if r['fail_lines'] else 'ok'
@@ -126,8 +137,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument('stock')
     ap.add_argument('--only', help='쉼표로 게이트 이름')
+    ap.add_argument('--workers', type=int, default=6, help='병렬 워커 수 (1 이면 직렬)')
     a = ap.parse_args(argv)
-    return run_gates(a.stock, a.only)
+    return run_gates(a.stock, a.only, a.workers)
 
 
 if __name__ == '__main__':

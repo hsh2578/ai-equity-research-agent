@@ -49,6 +49,32 @@ eq(g.build_args('{s}_ta', 'CJ ENM'), ['CJ ENM_ta'], '접미사 포맷도 한 인
 print('=' * 66)
 for label, want, got in _failed:
     print(f'  [FAIL] {label}\n      기대: {want!r}\n      실제: {got!r}')
+
+# 병렬 실행 -- 결과 순서는 GATES 순서, analysis 를 고치는 preflight 는 다른 것보다 먼저 끝나 있어야 한다
+_calls = []
+_orig_run = g._run
+def _fake_run(name, argfmt, stock):
+    import time as _t
+    _t.sleep(0.01 if name == 'preflight_check' else 0.001)
+    _calls.append(name)
+    return {'gate': name, 'exit': 0, 'fail_lines': [], 'summary': '', 'raw_tail': []}
+g._run = _fake_run
+import tempfile as _tf, json as _j, io as _io, contextlib as _cl
+_tmp = os.path.join(g.tc.PROJECT_ROOT, 'scripts', 'analysis___gates_test___ta.json')
+open(_tmp, 'w', encoding='utf-8').write('{}')
+try:
+    with _cl.redirect_stdout(_io.StringIO()):
+        rc = g.run_gates('__gates_test__', None, workers=4)
+    res = g.tc.read_json(os.path.join(g.tc.ta_dir('__gates_test__'), 'gates.json'))
+    eq([r['gate'] for r in res['results']], [x[0] for x in g.GATES], '병렬이어도 gates.json 순서는 GATES 순서')
+    eq(_calls[0], 'preflight_check', 'analysis 를 고치는 preflight 가 먼저 혼자 돈다')
+    eq(rc, 0, 'FAIL 없으면 0')
+finally:
+    g._run = _orig_run
+    os.remove(_tmp)
+    import shutil as _sh
+    _sh.rmtree(g.tc.data_dir('__gates_test__'), ignore_errors=True)
+
 print(f'  ta_gates 테스트: {_passed}개 통과 / {len(_failed)}개 실패')
 print('=' * 66)
 sys.exit(1 if _failed else 0)
