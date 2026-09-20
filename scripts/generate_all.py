@@ -3921,17 +3921,21 @@ def _generate_detailed_v3(data, output_dir):
 
     sum_html = "".join('<li>%s</li>' % _bold(html_lib.escape(b)) for b in _bul3)
 
-    def _story_paras(md, limit=4, maxlen=1500):
-        """커버 본문 문단. 표/인용/소제목은 빼고 산문만 순서대로 담는다."""
+    def _story_paras(md, limit=3, maxlen=700):
+        """커버 본문 문단. 표/인용/소제목은 빼고 산문만 순서대로 담는다.
+        v5.25: 불릿 3개 + 문단 4개 + 재무표 6행은 269mm 에 안 들어가 4번째 문단이 잘리고 표가 사라졌다
+        (HD현대중공업 5판·하이브 실측). 문단 3개, 합계 700자 안에서만 담고(불릿이 3줄씩이면 800자도 넘친다 -- 하이브 실측) 넘치는 문단은 싣지 않는다."""
         out, total = [], 0
         for ln in (md or "").split("\n\n"):
             t = ln.strip()
             if not t or t[0] in "#>|-*" or len(t) < 60:
                 continue
             t = re.sub(r"\s+", " ", t)
+            if out and total + len(t) > maxlen:
+                break
             out.append(_bold(html_lib.escape(t)))
             total += len(t)
-            if len(out) >= limit or total > maxlen:
+            if len(out) >= limit:
                 break
         return "".join("<p>%s</p>" % p for p in out)
 

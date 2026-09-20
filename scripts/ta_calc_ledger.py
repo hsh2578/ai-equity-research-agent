@@ -869,6 +869,48 @@ def check_sections(sections, ledger):
 
 # ==================== CLI ====================
 
+
+# 규칙 9 -- 이익과 배수의 기간을 맞춘다 (research-ta 절대 규칙 9, HD현대중공업·하이브 critic 실측)
+# per_scenarios[name] 에 eps_basis / per_basis 를 적는다. 예: "FY27E", "12M 선행", "후행 12M", "FY26E 컨센".
+# 둘의 기간 부류가 다르면 period_note(왜 다른 기간을 곱했는지) 가 없을 때 FAIL. 미표기는 WARN.
+_PERIOD_CLASSES = (
+    ('ttm', re.compile(r'후행|TTM|trailing|최근\s*12', re.I)),
+    ('12m', re.compile(r'12\s*M|12개월|롤링|rolling|NTM', re.I)),
+)
+_FY_RE = re.compile(r'(?:FY|20)(\d\d)', re.I)
+
+
+def _period_class(basis):
+    if not basis:
+        return None
+    for name, rx in _PERIOD_CLASSES:
+        if rx.search(basis):
+            return name
+    m = _FY_RE.search(basis)
+    return f'fy{m.group(1)}' if m else 'unknown'
+
+
+def check_period_match(assumptions):
+    """per_scenarios 의 eps_basis / per_basis 기간 부류 대조. check_sections 와 같은 결과 모양."""
+    out = []
+    for name, sc in ((assumptions or {}).get('per_scenarios') or {}).items():
+        if not isinstance(sc, dict):
+            continue
+        eb, pb = sc.get('eps_basis'), sc.get('per_basis')
+        base = {'section': 'assumptions.per_scenarios', 'pos': name, 'name': '기간 정합', 'metric': 'period',
+                'percent': False, 'text_value': f'eps={eb or "?"} / per={pb or "?"}', 'definitions': []}
+        ec, pc = _period_class(eb), _period_class(pb)
+        if ec is None or pc is None:
+            out.append({**base, 'result': 'WARN', 'ledger_values': [], 'reason': 'eps_basis/per_basis 미표기 (규칙 9)'})
+        elif ec == pc and ec != 'unknown':
+            out.append({**base, 'result': 'PASS', 'ledger_values': [ec], 'reason': ''})
+        elif sc.get('period_note'):
+            out.append({**base, 'result': 'PASS', 'ledger_values': [ec, pc], 'reason': f'기간 다름, period_note 있음: {sc["period_note"][:60]}'})
+        else:
+            out.append({**base, 'result': 'FAIL', 'ledger_values': [ec, pc],
+                        'reason': '이익과 배수의 기간이 다른데 period_note 없음 (규칙 9: 선행 이익에는 선행 배수)'})
+    return out
+
 def run_compute(stock_name):
     ta = ta_common.ta_dir(stock_name)
     fs = ta_common.read_json(os.path.join(ta_common.data_dir(stock_name), 'financial_summary.json'))
@@ -912,6 +954,7 @@ def run_check(stock_name, analysis_path=None):
         print(f'[ERROR] {analysis_path} 없음')
         return 1
     res = check_sections(A.get('sections') or {}, ledger)
+    res += check_period_match(ta_common.read_json(os.path.join(ta, 'assumptions.json')) or {})
     counts = {k: sum(1 for r in res if r['result'] == k) for k in ('PASS', 'FAIL', 'WARN')}
     ta_common.write_json(os.path.join(ta, 'calc_check.json'),
                          {'status': 'failed' if counts['FAIL'] else 'ok', 'analysis': analysis_path,
@@ -919,7 +962,8 @@ def run_check(stock_name, analysis_path=None):
     for r in res:
         if r['result'] != 'PASS':
             print(f"  [{r['result']}] {r['section']}@{r['pos']} {r['name']} 본문 {r['text_value']}"
-                  f"{'%' if r['percent'] else ''} / 장부 {r['ledger_values']}")
+                  f"{'%' if r['percent'] else ''} / 장부 {r['ledger_values']}"
+                  + (f" -- {r['reason']}" if r.get('reason') and r.get('metric') == 'period' else ''))
             for d in r.get('definitions', []):
                 print(f'      장부 정의: {d}')
     print(f"[calc_check] PASS {counts['PASS']} / FAIL {counts['FAIL']} / WARN {counts['WARN']}")

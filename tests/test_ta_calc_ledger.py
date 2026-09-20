@@ -377,6 +377,17 @@ eq([(r['result'], r['reason']) for r in cl.check_sections({'s': '상반기 ROE 5
 eq([r['result'] for r in cl.check_sections({'s': '2022년 ROE 12.9%'}, LEDGER_V)], ['WARN'], '장부에 없는 연도는 WARN')
 eq([r['result'] for r in cl.check_sections({'s': '2025년 ROE 12.9%'}, LEDGER_V)], ['FAIL'], '장부에 있는 연도의 다른 값은 FAIL')
 
+# 규칙 9 -- 이익·배수 기간 정합 (하이브 critic: FY27E EPS x 12M 선행 배수)
+pm = lambda ps: [(r['pos'], r['result']) for r in cl.check_period_match({'per_scenarios': ps})]  # noqa: E731
+eq(pm({'a': {'eps': 1, 'per': 2}}), [('a', 'WARN')], 'basis 미표기는 WARN')
+eq(pm({'a': {'eps': 1, 'per': 2, 'eps_basis': 'FY27E', 'per_basis': '2027년 컨센 PER'}}), [('a', 'PASS')], '같은 연도는 PASS')
+eq(pm({'a': {'eps': 1, 'per': 2, 'eps_basis': '12M 선행', 'per_basis': 'KIS 롤링 12개월'}}), [('a', 'PASS')], '12M 끼리 PASS')
+eq(pm({'a': {'eps': 1, 'per': 2, 'eps_basis': 'FY27E', 'per_basis': '12M 선행'}}), [('a', 'FAIL')], 'FY27 x 12M 은 note 없으면 FAIL')
+eq(pm({'a': {'eps': 1, 'per': 2, 'eps_basis': 'FY27E', 'per_basis': '12M 선행', 'period_note': '정점 뒤 정상화 연도'}}),
+   [('a', 'PASS')], 'note 가 있으면 PASS (이유를 본문에 적었다는 뜻)')
+eq(pm({'a': {'eps': 1, 'per': 2, 'eps_basis': '후행 12M', 'per_basis': 'TTM'}}), [('a', 'PASS')], '후행 끼리 PASS')
+eq(cl._period_class('바닥 PER'), 'unknown', '연도도 12M 도 없으면 unknown')
+
 print('=' * 66)
 if _failed:
     for label, want, got in _failed:

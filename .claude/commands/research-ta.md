@@ -140,6 +140,7 @@ critic 12건 중 결정 수준 7건은 밸류 산식이었고, 재대조 잔재 
 - **컨센 목표가 평균은 표본 컷오프(발간일)를 밝히고, 컷오프 밖의 큰 상향·하향을 한 줄 적는다.**
 - **리스크 표 필수 행 둘**: "실적이 맞아도 배수가 깎이는 위험"(민감도 표가 배수 > 이익이라 말하면 그 변수에 확률·관찰지표가 있어야 한다), "수요·수주 공백이 실적보다 먼저 배수에 반영되는 경로".
 - **s07 을 고쳤으면 빌드 전에 grep**: `grep -n "{{per_ttm}}\|{{pbr_now}}\|{{per_now}}" sections/s01*.md sections/s13*.md sections/s14*.md` 로 옛 플레이스홀더·라벨이 남았는지 본다. decision.md 도 같은 값으로.
+  **grep 범위는 섹션 파일만이 아니다** -- 하이브 재대조 잔재 2건은 `s14_short_thesis.md`(alias 섹션)와 `assumptions.json` 의 `catalysts[].impact`(촉매 표 임계값 "68% 유지")였다. 판정 임계값·EPS·목표가를 바꿨으면 `grep -rn "옛값" sections/ decision.md assumptions.json questions.json watchlist.json` 로 다섯 파일을 한 번에 본다.
 - 급락·급등일의 재료가 공시 제목뿐이면 `ta_news_window.py` 로 그 날짜 창의 뉴스를 받는다(4/1 -11.8% = 모회사 교환사채).
 
 ### ~~절대 규칙 13~~ -- 폐기 (2026-09-18 사용자 실물 검토: "CJ프레시웨이 처음 나온 게 가독성이 낫다")
@@ -161,7 +162,7 @@ HD현대중공업 실측: 이 규칙 전 판은 12곳 목표가와 EPS 만 있�
 B 가 낸 가치는 작성이 아니라 **검토**에서 나왔다(원자료 오류 3건, brief 오류 2건 발견) -> 에이전트는 critic·편집 검토로 쓴다.
 섹션은 `data/{종목명}/ta/sections/*.md` 에 `{{플레이스홀더}}` 로 쓰고 빌더가 장부·시세·수급 값을 채운다(종가·장부가 바뀌면 재빌드만). 조사는 `{{a}}를` 처럼 붙이면 빌더가 받침에 맞춘다(에프에스티 빌더 `render()` 참고).
 `scripts/_build_{종목명}_ta.py` → `scripts/analysis_{종목명}_ta.json`. **`meta.stock_name` 은 `{종목명}` 그대로**(데이터 경로).
-- s01 첫 4개 산문 문단 합계 ≤ 1,100자(커버 카드). `peers` 는 배수 산정 대상과 같은 5사(국내 3 + 해외 2 권장), `_peer_snapshot.json` 을 그날 갱신(모의 500 이면 `_run_with_real_kis.py`). `opinion.risk_reward` 는 짧게(레일 폭).
+- s01 첫 3개 산문 문단 합계 ≤ 700자(커버 카드 -- 생성기가 3문단·700자까지만 싣고 넘치는 문단은 뺀다, v5.25. 4문단 1,100자 규칙은 HD·하이브 실측에서 4번째 문단이 잘리고 재무표가 사라져 폐기). `peers` 는 배수 산정 대상과 같은 5사(국내 3 + 해외 2 권장), `_peer_snapshot.json` 을 그날 갱신(모의 500 이면 `_run_with_real_kis.py`). `opinion.risk_reward` 는 짧게(레일 폭).
   해외 비교기업은 `_peer_snapshot_global.json`(D4·generate_all 이 병합해 대조). **`flags`(forward_pe_suspect·fx_missing) 가 있는 값은 본문에 쓰지 않는다** -- 가와사키重 선행 PER 4.2 실측. s07 에 해외 표 한 개 + "우리 배수가 중국·일본·유럽 사이 어디인가" 한 문단.
 - ORDER(v5.21) 에 `s08_esg` 를 리스크 앞에 끼운다. alias 키 재생성(CLAUDE.md "v5.0 키 스킴 분열").
 - 작성하면서 `data/{종목명}/ta/coverage_map.json` 을 채운다: brief 의 필수(Y) ID 마다 `{"section", "quote"}`(본문에 실제로 넣은 문장 20자+) 또는 `{"excluded": "사유"}`.
@@ -175,7 +176,7 @@ python scripts/ta_coverage_check.py {종목명}          # 반영 게이트 (0 F
 # ⚠️ financial_summary.json 의 financials['{올해}'] 열은 매출·순이익만 반기 실측이고 ocf/capex/net_debt/비율은 Wisereport 연간 컨센(2026E)이다.
 #    빌더의 반기 열(H1)에 그 열을 쓰지 말고 반기보고서 현금흐름표에서 직접 읽는다 (CJ프레시웨이 critic 1회차: OCF +1,233 -> 실제 -363).
 python scripts/ta_readability_gate.py {종목명}        # 참고용(강제 없음): 문장당 숫자·같은 금액 반복 WARN
-python scripts/ta_calc_ledger.py check {종목명}       # 본문 지표값 = 장부 (0 FAIL). WARN 은 반기·부문·타사·기준선 등 장부 밖 표기 -- 출처를 눈으로 확인하고 넘어간다. 반기 값은 '상반기/1H26' 을, 타사 값은 회사명을 30자 안에 적는다
+python scripts/ta_calc_ledger.py check {종목명}       # 본문 지표값 = 장부 (0 FAIL) + 규칙 9 기간 정합: per_scenarios 마다 eps_basis/per_basis 를 적고, 다르면 period_note(본문에 적은 이유) 없이는 FAIL, 미표기는 WARN (v5.25, 하이브 실측 FY27E x 12M 선행). WARN 은 반기·부문·타사·기준선 등 장부 밖 표기 -- 출처를 눈으로 확인하고 넘어간다. 반기 값은 '상반기/1H26' 을, 타사 값은 회사명을 30자 안에 적는다
 python scripts/ta_industry_gate.py {종목명}          # G1~G6 산업현황 재료·요약 ■3·밸류 분리 (0 FAIL) -- 절대 규칙 8 의 밸류 용어 카운트는 G5 가 대신한다
 python scripts/preflight_check.py {종목명}_ta  ...    # 기존 게이트는 analysis 경로를 _ta 로
 python scripts/verify_numbers.py / verify_style.py / verify_facts.py / verify_tone.py / verify_content.py / source_coverage.py / section_rubric.py
