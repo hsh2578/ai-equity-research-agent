@@ -104,7 +104,8 @@ def main(argv=None):
         json.dump(alln, open(all_path, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
     json.dump({'stock': a.stock, 'collected_at': datetime.now().isoformat(timespec='minutes'), 'windows': log},
               open(os.path.join(ta, 'news_window.json'), 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
-    tc.manifest_update(a.stock, 'news_window', 'ok' if added else 'skipped', windows=len(dates), added=added)
+    have = sum(1 for x in items if x.get('type') == 'window')
+    tc.manifest_update(a.stock, 'news_window', 'ok' if (added or have) else 'skipped', windows=len(dates), added=added, total=have)
     print(f'[OK] news_window: 날짜 {len(dates)}개, 추가 {added}건 -> ta/news_relevant.json')
 
 

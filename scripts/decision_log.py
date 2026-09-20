@@ -490,6 +490,9 @@ def cmd_record(args):
     meta, op, price = d.get('meta', {}), d.get('opinion', {}), d.get('price', {})
     market = 'US' if (meta.get('country') or '').upper() in ('US', 'USA') else 'KR'
     trade_date = meta.get('date') or date.today().isoformat()
+    m = re.match(r'\s*(\d{4})\D+(\d{1,2})\D+(\d{1,2})', str(trade_date))  # '2026년 9월 17일' -> ISO (HD _ta 실측: 2026917 로 기록됨)
+    if m:
+        trade_date = f'{m.group(1)}-{int(m.group(2)):02d}-{int(m.group(3)):02d}'
     trade_date = re.sub(r'[^\d\-]', '', str(trade_date))[:10] or date.today().isoformat()
     log = DecisionLog()
     result = log.record(

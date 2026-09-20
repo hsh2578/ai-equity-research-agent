@@ -107,8 +107,11 @@ def main(argv=None):
             res['failed'].append({'step': 'irtv', 'reason': repr(e)[:200]})
     km = read_json(os.path.join(d, 'ir_materials', 'index.json')) or {}
     res['kind_ir'] = [i for i in km.get('items', []) if i.get('status') == 'ok']
-    md = [f"# {stock} -- 회사가 직접 말한 것 ({res['asof']})\n", '## IR 발표자료 (KIND IR자료실, ta_kind_ir)\n']
-    md += [f"- {i['date']} {i['file']} -> ta/ir_materials/{i['txt']} ({i['pages']}p, {i['chars']:,}자)" for i in res['kind_ir']] or ['- 없음(ta_kind_ir 미실행 또는 자료 없음)']
+    md = [f"# {stock} -- 회사가 직접 말한 것 ({res['asof']})\n", '## IR 발표자료 (KIND IR자료실 ta_kind_ir + 회사 홈페이지 ta_company_ir)\n']
+    # source=='site' 는 txt 가 ta/ 바로 아래(ir_site/...); 이미지 슬라이드면 png_dir 을 Read 로 본다
+    md += [f"- {i['date']} {i['file']} -> ta/{i['txt'] if i.get('source') == 'site' else 'ir_materials/' + i['txt']} ({i['pages']}p, {i['chars']:,}자)"
+           + (f" -- 이미지 슬라이드, PNG: ta/{i['png_dir']}/pNN.png" if i.get('png_dir') else '')
+           for i in res['kind_ir']] or ['- 없음(ta_kind_ir·ta_company_ir 미실행 또는 자료 없음)']
     md += ['\n## IR 개최 공시(DART 첨부 -- 안내문)\n']
     md += [f"- {f['date']} {f['name']} -> ta/{f['file']} ({f['chars']:,}자)" for f in res['ir_filings']] or ['- 없음(2년 내 기업설명회 공시 없음)']
     md += ['\n## 인터뷰·발언 기사 (news_relevant.json 에서 판별)\n']

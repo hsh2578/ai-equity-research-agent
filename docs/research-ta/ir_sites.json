@@ -1,0 +1,23 @@
+{
+  "_readme": "종목별 회사 IR 페이지 주소(ta_company_ir.py). 수동 등록 = URL 목록(list, --rediscover 로도 안 덮는다). 자동 탐색 결과 = {\"auto\": true, \"found\": 날짜, \"urls\": [...]} (--rediscover 로 갱신). 링크 패턴: (a) href .pdf (b) HD현대 CMS front_file_download (c) download=\"x.pdf\"+onclick=\"fn(token)\" (사이트 JS 의 fn 정의에서 URL 접두를 읽음, 한화오션 /attach?et=).",
+  "HD현대중공업": [
+    "https://hd-hhi.com/kr/investors/ir-data/earnings-release",
+    "https://hd-hhi.com/kr/investors/ir-data/presentation"
+  ],
+  "한화오션": {
+    "auto": true,
+    "found": "2026-09-20",
+    "urls": [
+      "https://www.hanwhaocean.com/investors/ea"
+    ]
+  },
+  "CJ프레시웨이": {
+    "auto": true,
+    "found": "2026-09-20",
+    "urls": [
+      "https://www.cjfreshway.com/ir/board/list.do",
+      "https://www.cjfreshway.com/ir/board/view.do?seq=660",
+      "https://www.cjfreshway.com/ir/board/view.do?seq=661"
+    ]
+  }
+}
