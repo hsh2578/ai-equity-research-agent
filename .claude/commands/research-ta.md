@@ -171,7 +171,11 @@ B 가 낸 가치는 작성이 아니라 **검토**에서 나왔다(원자료 오
 - **증권사 종목리포트는 투자포인트를 표로 집계한다**(사용자 지적 2026-09-18 "투자포인트가 주요 이슈"): `ta/reports/company/*.txt` 전편의 투자포인트를 뽑아 s02 에 `| 투자포인트 | 언급 리포트(N편 중) | 우리 판단 |` 표를 둔다. 빈도가 높은 포인트가 "시장이 가격에 넣은 가정"이고, **0편이 언급한 것**(HD현대중공업: 미포 합병 기저효과·파업)이 우리가 판정 지점으로 삼을 것이다. lite 에서는 메인이 직접, 전체판에서는 ta-sellside-analyst brief 의 '시장 기대 표'가 이 역할을 한다.
 
 ## STEP 7 -- 검증
-게이트는 **마지막에 한 번 전체**를 돌리고, 중간 보정 때는 깨진 검증기 하나만 다시 돌린다(하이브 실측: 12종 재실행 7회가 시간을 먹었다). 치환 스크립트의 앵커는 기억이 아니라 grep 으로 먼저 뽑는다.
+```bash
+python scripts/ta_gates.py {종목명}                       # 13종 한 명령 (v5.25). _ta 파일을 analysis 자리에 잠시 복사하고 원본 복원
+python scripts/ta_gates.py {종목명} --only verify_tone      # 깨진 것 하나만
+```
+**보정은 최대 2바퀴.** 1바퀴: 전체 → FAIL 을 한 번에 모아 고침 → 2바퀴: 전체. 2바퀴 뒤에도 남는 것이 **형식 게이트**(verify_tone·verify_content·section_rubric·source_coverage·verify_style·G3~G6)면 WARN 으로 `docs/research-ta-ablation.md` 에 적고 넘어간다. **내용 게이트**(ta_calc_ledger·ta_industry_gate G1/G2·preflight·verify_numbers·verify_facts·ta_coverage_check)는 0 FAIL 필수. 하이브 실측: 12종 재실행 7회에 30분, 그 사이 잡힌 것은 전부 표기였고 결정 수준 결함 3건은 critic 이 잡았다. 치환 스크립트의 앵커는 기억이 아니라 grep 으로 먼저 뽑는다.
 ```bash
 python scripts/ta_coverage_check.py {종목명}          # 반영 게이트 (0 FAIL)
 # ⚠️ financial_summary.json 의 financials['{올해}'] 열은 매출·순이익만 반기 실측이고 ocf/capex/net_debt/비율은 Wisereport 연간 컨센(2026E)이다.
