@@ -13,8 +13,9 @@ IR협의회 리포트가 읽히는 이유는 산업 현황 한 페이지가 처�
 
 ## 읽을 것
 - `ta/reports/industry/_manifest.json` + `reports[].txt` -- 증권사 산업리포트(`is_weekly` 는 보조)
-- `_peer_snapshot.json` -- 경쟁사 시총·배수
+- `_peer_snapshot.json` -- 경쟁사 시총·배수. `_peer_snapshot_global.json` (v5.24, 해외 비교기업 yfinance 실측) 이 있으면 같이 -- `flags` 있는 값은 쓰지 않는다
 - 기업 개요를 알기 위해 `ta/dart/business.txt` 의 앞부분(1. 사업의 개요, 2. 주요 제품)만
+- (v5.24) `ta/notes/{산업리포트id}.md` 가 있으면 그것이 입력이다 -- 메인이 산업리포트 원문을 읽고 "산업이 왜 지금 바뀌는가 → 누가 수혜인가"로 남긴 노트. 이 역할은 그 고리를 협회·정부 통계·고객사 원문으로 채우는 것이지 리포트를 다시 요약하는 것이 아니다. 산업리포트를 원문으로 읽을 때는 `docs/research-ta/reading_note_format.md` 형식으로 노트를 남긴다.
 - 형식 규약: `docs/research-ta/brief_format.md`
 
 ## 웹 검색 (허용, 규칙 엄수)

@@ -14,6 +14,7 @@ tools: Read, Grep, Glob, Write
 - `ta/reports/company/_manifest.json` 과 그 안의 `reports[].txt` 전부 -- 종목리포트(네이버 리서치·한경), IR협의회 보고서(`is_kirs`)
 - `_wisereport_consensus.json` -- 컨센서스 추이(현재/1주/1개월/3개월/1년). **`period_type` 연간·분기를 섞지 않는다**(프로젝트 사고 사례)
 - 형식 규약: `docs/research-ta/brief_format.md`
+- (v5.24) 리포트는 **원문 전부**를 읽는다 -- 목표가·EPS·투자포인트 제목만 뽑는 것은 정독이 아니다. 편당 `ta/notes/{id}.md` 를 `docs/research-ta/reading_note_format.md` 의 다섯 질문(주장 / 논리 / 저자가 인정한 반론 / 확인 방법 / 직전 대비 변경)으로 남기고, brief 는 그 노트 위에 쓴다. 메인이 이미 노트를 남겼으면(lite) 다시 쓰지 않는다.
 
 ## 할 일
 1. **리포트별 표**: 발간사·일자·경과월(`age_band`)·의견·목표가·직전 목표가·핵심 논거 2~3개·주요 추정치.

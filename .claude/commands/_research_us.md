@@ -132,6 +132,9 @@ python scripts/build_snapshot.py {TICKER}
 
 ## STEP 2.5-US: SEC 본문 정독
 
+> (v5.24) 애널리스트 리포트·IR 덱 정독의 정의는 KR 과 같다 -- `docs/research-ta/reading_note_format.md`(원문 전부, 편당 노트 다섯 질문, 밸류 방법표).
+> US 는 증권사 리포트 대신 `_us_consensus.json` 과 회사 IR 덱(`ta_company_ir.py` 는 DART 홈페이지 기반이라 US 는 IR 페이지 URL 을 `--url` 로 직접 준다)을 읽는다. 해외 비교기업은 `peer_snapshot_us.py` 로 이미 실측한다.
+
 ```bash
 python - <<'PY'
 import sys, json; sys.path.insert(0, 'scripts')
