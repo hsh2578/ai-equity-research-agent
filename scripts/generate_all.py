@@ -4782,6 +4782,11 @@ def main():
         try:
             with open(peer_path, 'r', encoding='utf-8') as f:
                 peer_snap = json.load(f)
+            # (v5.24) 해외 비교기업 스냅샷(peer_snapshot_global.py)이 있으면 같은 기준(억원·후행 PER)으로 병합
+            gpath = os.path.join(data_dir, "_peer_snapshot_global.json")
+            if os.path.exists(gpath):
+                with open(gpath, 'r', encoding='utf-8') as f:
+                    peer_snap = {**peer_snap, **{k: v for k, v in json.load(f).items() if isinstance(v, dict)}}
             peers_json = data.get("peers", [])
             # "본 종목"(하이라이트) 제외하고 비교
             for p in peers_json:

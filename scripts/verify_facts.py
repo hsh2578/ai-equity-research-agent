@@ -278,6 +278,11 @@ def main(stock_name):
         peer = json.load(open(f'{base}/_peer_snapshot.json', encoding='utf-8'))
     except FileNotFoundError:
         peer = {}
+    try:  # (v5.24) 해외 비교기업(peer_snapshot_global.py, yfinance)도 같은 D4 로 대조한다. dict 값만 병합(_fx·_collected_at 제외)
+        g = json.load(open(f'{base}/_peer_snapshot_global.json', encoding='utf-8'))
+        peer = {**peer, **{k: v for k, v in g.items() if isinstance(v, dict)}}
+    except FileNotFoundError:
+        pass
 
     print(f"\n{'='*70}")
     print(f"  STEP 6 1회차 D 블록 -- 팩트 체크 자동 검증: {stock_name}")

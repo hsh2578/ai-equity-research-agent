@@ -27,7 +27,20 @@ _spec.loader.exec_module(_fst)
 render, won, pct, jload = _fst.render, _fst.won, _fst.pct, _fst.jload
 ORDER, TITLES = _fst.ORDER, _fst.TITLES
 
-PEER_NOTE = {'HD한국조선해양': '모회사(지주), 69.2% 보유', '삼성중공업': '상선 전업, 해양 비중', '한화오션': '상선+특수선, KDDX·태국 호위함'}
+PEER_NOTE = {'HD한국조선해양': '모회사(지주), 69.2% 보유', '삼성중공업': '상선 전업, 해양 비중', '한화오션': '상선+특수선, KDDX·태국 호위함',
+             '중국선박공업': '중국 1위 조선(상하이)', '미쓰비시중공업': '일본 조선·방산·에너지 복합'}
+# peers 배열(커버·요약 표) = 배수 산정 대상 5사: 국내 3 + 해외 2. 해외 값은 _peer_snapshot_global.json(yfinance, 억원 환산·후행 PER)
+PEER_ORDER = ['HD한국조선해양', '삼성중공업', '한화오션', '중국선박공업', '미쓰비시중공업']
+GLOBAL_SLUG = {'중국선박공업': 'cssc', '양쯔장조선': 'yzj', '미쓰비시중공업': 'mhi', '가와사키중공업': 'khi', '케펠': 'keppel', '바르질라': 'wartsila'}
+
+
+def load_global_peers():
+    """flags(forward_pe_suspect·fx_missing)·error 가 있는 레코드는 리포트에 쓰지 않는다."""
+    p = os.path.join(D, '_peer_snapshot_global.json')
+    if not os.path.exists(p):
+        return {}, ''
+    g = jload(p)
+    return {k: r for k, r in g.items() if isinstance(r, dict) and 'error' not in r}, (g.get('_collected_at') or '')[:10]
 # 연간 실적 (FnGuide/DART 확정) + 2026 상반기 실측 (반기보고서 :6496 현금흐름표, :6219 지배순이익, :3449 순차입금)
 FIN_ROWS = [
     ['매출액(억원)', '90,455', '119,639', '144,865', '175,806', '122,485'],
@@ -130,6 +143,15 @@ def values():
     for who, key in (('외국인', 'foreign'), ('기관', 'inst'), ('개인', 'indiv')):
         v[f'f_{key}_sh'] = f"{fl['net_shares'][who]:+,}주"
         v[f'f_{key}_krw'] = f"{fl['net_shares'][who] * price / 1e8:+,.0f}억원"
+    gpeers, gasof = load_global_peers()   # s07 해외 비교기업 표 (flags 있는 값은 n/a)
+    v['gp_asof'] = gasof
+    for n, slug in GLOBAL_SLUG.items():
+        r = gpeers.get(n) or {}
+        fl = r.get('flags') or []
+        v[f'gp_{slug}_mcap'] = f"{r['market_cap_uk']:,}억원" if r.get('market_cap_uk') else 'n/a'
+        v[f'gp_{slug}_per'] = f"{r['per']:.1f}배" if r.get('per') else 'n/a'
+        v[f'gp_{slug}_fper'] = 'n/a(추정 산포)' if 'forward_pe_suspect' in fl else (f"{r['per_forward']:.1f}배" if r.get('per_forward') else 'n/a')
+        v[f'gp_{slug}_pbr'] = f"{r['pbr']:.2f}배" if r.get('pbr') else 'n/a'
     return v
 
 
@@ -158,6 +180,8 @@ def main(argv=None):
     tb, tbase, tbull = rnd(L['per_value_bear']), rnd(L['per_value_base']), rnd(L['per_value_bull'])
     peers_snap = jload(os.path.join(D, '_peer_snapshot.json'))
     peers_snap = peers_snap.get('peers', peers_snap)
+    gpeers, _ = load_global_peers()
+    peers_snap = {**peers_snap, **{k: r for k, r in gpeers.items() if not r.get('flags')}}
     mcap_uk = round(A['price'] * A['shares'] / 1e8)
     d = {
         'meta': {'stock_name': STOCK, 'stock_code': '329180', 'market': 'KOSPI', 'country': 'KR', 'industry': '조선·선박엔진',
@@ -177,8 +201,9 @@ def main(argv=None):
         'quarterly': QUARTERLY,
         'supply': {'foreign': fl['net_shares']['외국인'], 'institution': fl['net_shares']['기관'], 'individual': fl['net_shares']['개인'],
                    'days': fl['days'], 'comment': f"외국인 {v['f_foreign_sh']}, 기관 {v['f_inst_sh']}, 개인 {v['f_indiv_sh']} (주식수 기준, 금액은 조회 시점 가격 환산)"},
-        'peers': [{'name': n, 'market_cap': f"{r['market_cap_uk']:,}억", 'per': r['per'], 'pbr': r['pbr'], 'note': PEER_NOTE.get(n, ''), 'highlight': False}
-                  for n, r in peers_snap.items() if r.get('market_cap_uk')][:5],
+        'peers': [{'name': n, 'market_cap': f"{peers_snap[n]['market_cap_uk']:,}억", 'per': peers_snap[n]['per'], 'pbr': peers_snap[n]['pbr'],
+                   'note': PEER_NOTE.get(n, ''), 'highlight': False}
+                  for n in PEER_ORDER if n in peers_snap and peers_snap[n].get('market_cap_uk')][:5],
         'catalysts': A.get('catalysts', []),
         'sections': secs,
     }

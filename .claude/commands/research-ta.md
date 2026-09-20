@@ -51,7 +51,8 @@ python -c "import sys; sys.path.insert(0,'scripts'); import ta_common as t; prin
 ```
 기존 `/research` STEP 1 수집물이 7일 넘었거나 없으면 먼저 갱신한다(v5.4 규칙 8):
 `financial_summary.py`(KIS 500 이면 `_run_with_real_kis.py`) · `collect_dart_full.py` · `collect_dart_filings.py` · `dart_quarterly.py` ·
-`wisereport_consensus.py` · `fdr_band.py` · `volatility_beta.py` · `peer_snapshot.py`(업종키 결과를 눈으로 확인, v5.18 규칙 3) · `price_cycles.py` · `driver_scan.py` · `evidence_scan.py`
+`wisereport_consensus.py` · `fdr_band.py` · `volatility_beta.py` · `peer_snapshot.py`(업종키 결과를 눈으로 확인, v5.18 규칙 3) ·
+`peer_snapshot_global.py {종목} {업종키} [--peers "이름:TICKER"]`(해외 비교기업, yfinance 억원 환산 -- 국내 3사만 놓으면 배수가 어디 서는지 못 본다) · `price_cycles.py` · `driver_scan.py` · `evidence_scan.py`
 
 ## STEP 1 -- 신규 수집 (결정론)
 업종 category·키워드는 `ta/dart/business.txt` 의 1~2장을 보고 정한다(`ta_dart_diff` 를 먼저 돌린다).
@@ -141,7 +142,8 @@ s07 판단 블록·리스크 표의 '대응 트리거' 열에 있다. 용어는 
 B 가 낸 가치는 작성이 아니라 **검토**에서 나왔다(원자료 오류 3건, brief 오류 2건 발견) -> 에이전트는 critic·편집 검토로 쓴다.
 섹션은 `data/{종목명}/ta/sections/*.md` 에 `{{플레이스홀더}}` 로 쓰고 빌더가 장부·시세·수급 값을 채운다(종가·장부가 바뀌면 재빌드만). 조사는 `{{a}}를` 처럼 붙이면 빌더가 받침에 맞춘다(에프에스티 빌더 `render()` 참고).
 `scripts/_build_{종목명}_ta.py` → `scripts/analysis_{종목명}_ta.json`. **`meta.stock_name` 은 `{종목명}` 그대로**(데이터 경로).
-- s01 첫 4개 산문 문단 합계 ≤ 1,100자(커버 카드). `peers` 는 배수 산정 대상과 같은 5사, `_peer_snapshot.json` 을 그날 갱신(모의 500 이면 `_run_with_real_kis.py`). `opinion.risk_reward` 는 짧게(레일 폭).
+- s01 첫 4개 산문 문단 합계 ≤ 1,100자(커버 카드). `peers` 는 배수 산정 대상과 같은 5사(국내 3 + 해외 2 권장), `_peer_snapshot.json` 을 그날 갱신(모의 500 이면 `_run_with_real_kis.py`). `opinion.risk_reward` 는 짧게(레일 폭).
+  해외 비교기업은 `_peer_snapshot_global.json`(D4·generate_all 이 병합해 대조). **`flags`(forward_pe_suspect·fx_missing) 가 있는 값은 본문에 쓰지 않는다** -- 가와사키重 선행 PER 4.2 실측. s07 에 해외 표 한 개 + "우리 배수가 중국·일본·유럽 사이 어디인가" 한 문단.
 - ORDER(v5.21) 에 `s08_esg` 를 리스크 앞에 끼운다. alias 키 재생성(CLAUDE.md "v5.0 키 스킴 분열").
 - 작성하면서 `data/{종목명}/ta/coverage_map.json` 을 채운다: brief 의 필수(Y) ID 마다 `{"section", "quote"}`(본문에 실제로 넣은 문장 20자+) 또는 `{"excluded": "사유"}`.
 - 투자자 적합성(요약 끝), 위험 시나리오 표의 '관찰 지표·대응 트리거' 열, 기준 단위 선언(요약 첫머리).

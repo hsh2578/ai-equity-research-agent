@@ -246,6 +246,7 @@ out_path = f'_tmp_r{idx}_{short}.txt'
 | `us_consensus.py` | **US 컨센 추이.** yfinance `eps_trend`/`eps_revisions`/`earnings_estimate`/`price_targets`/`upgrades_downgrades`. KR Wisereport 컨센 추이의 미국판, 추가 API 키 불필요 |
 | `fdr_band_us.py` | US 5년 PER/PBR 밴드. **밴드 유효성 게이트** 신설 -- 표본<3 또는 변동계수>0.6 이면 `per_band_valid: false` (AMD 실측 CV 0.66) |
 | `peer_snapshot_us.py` | US Peer 실시간 (업종키 10종 내장). 기존 인라인 임시코드를 스크립트로 고정 |
+| `peer_snapshot_global.py` | **(v5.24)** KR 종목의 **해외 비교기업**(yfinance, 시총 억원 환산·후행/선행 PER·PBR) -> `_peer_snapshot_global.json`. `verify_facts` D4 와 `generate_all` 검증 10 이 KIS 스냅샷에 병합해 대조. 선행 PER 이 후행의 0.3배 미만·3배 초과면 `flags` (가와사키重 4.2 실측) -- flags 있는 값은 본문에 쓰지 않는다. HD현대중공업 4판까지 국내 3사만 놓아 "배수가 중국(9~11)·일본(42)·바르질라(22) 사이 어디인가"를 못 적던 것을 고쳤다 |
 | `quarter_labels.py` | 분기 라벨 파싱 공용 모듈. **B13 이 v4.20부터 죽어 있던 것을 복구** (headers 에 분기가 오는데 rows[0] 을 읽어 항상 거짓 PASS). 표기 5종 지원 + 구멍 탐지 방식으로 전환 |
 | `fetch_broker_reports.py` | 종목/업종 애널리스트 리포트 일괄 수집 -> `data/{종목}/reports_text/`. `/wf-report` 정독 의무를 실행 가능하게 만든다 |
 | `broker/` | 한경 컨센서스 수집기 이식본 (`fetch_range`/`fetch_all`/`extract_pdf`/`rs_table`/`build_corpus`). **한경은 IP rate limit -- `--workers 2 --delay 0.6` 초과 금지** |

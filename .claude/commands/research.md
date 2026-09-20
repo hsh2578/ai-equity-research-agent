@@ -4253,6 +4253,7 @@ wait
 python scripts/fdr_band.py {종목명} {종목코드} &
 python scripts/volatility_beta.py {종목명} {종목코드} &
 python scripts/peer_snapshot.py {종목명} {업종키} &
+python scripts/peer_snapshot_global.py {종목명} {업종키} &   # v5.24 해외 비교기업(yfinance, 억원 환산). flags 있는 값은 쓰지 않는다
 wait
 ```
 
