@@ -7,6 +7,7 @@
 <img alt="Python" src="https://img.shields.io/badge/Python-3.11+-3776AB?logo=python&logoColor=white">
 <img alt="LLM Agent" src="https://img.shields.io/badge/LLM-Multi--step%20Agent-7C3AED">
 <img alt="Data" src="https://img.shields.io/badge/Data-DART%20%7C%20KIS%20%7C%20SEC%20EDGAR%20%7C%20FnGuide-0E7C5B">
+<img alt="Macro" src="https://img.shields.io/badge/Macro-FRED%209%20%7C%20BOK%20ECOS%204-B45309">
 <img alt="Output" src="https://img.shields.io/badge/Output-Institutional%20PDF%2019~60p-1A2B4C">
 </p>
 
@@ -129,6 +130,26 @@ STEP 6   3층 자가검증 × 무조건 3회 반복
 | **3. `report-critic` 서브에이전트** | 질적 결함 (가정 공격성, 논거 깊이, 숨은 모순, 놓친 각도) | **Fresh context 독립 비평** |
 
 > 작성자가 자기 리포트를 검증하면 자기일관성 편향으로 결함을 놓칩니다. 작성 컨텍스트를 갖지 않는 별도 서브에이전트를 호출해 **편향을 구조적으로 제거**한 것이 이 설계의 핵심입니다.
+
+## 거시 지표 — 수집만 하지 않고 시점·단위·범위를 같이 관리합니다
+
+`scripts/macro_data.py` · 테스트 `tests/test_macro_data.py` + API 픽스처 7종
+
+**미 연준(FRED) 9계열** — 연방기금금리(FEDFUNDS) · 국채 10년(DGS10) · 2년(DGS2) · 10-2 스프레드(T10Y2Y) · 소비자물가(CPIAUCSL) · 실업률(UNRATE) · 달러인덱스 광의(DTWEXBGS) · WTI 유가(DCOILWTICO) · 변동성지수(VIXCLS)
+
+**한국은행(ECOS) 4계열** — 기준금리(722Y001) · 원/달러 매매기준율(731Y001) · 소비자물가(901Y009) · 국고채 3년(817Y002). 통계표 코드는 문서를 믿지 않고 **2026-09 실호출로 확인한 값**입니다.
+
+받는 일 자체가 까다로웠고, 그 함정들을 코드에 박아 두었습니다.
+
+| 함정 | 처리 |
+|---|---|
+| **ECOS는 인증 실패·데이터 없음에도 HTTP 200**을 주고 본문에 `RESULT` 블록만 넣는다 | 상태코드로 성공을 판정하지 않고 본문의 오류 블록을 먼저 검사 |
+| FRED는 휴일·결측을 `.` 한 글자로 표시 | 숫자 변환 전에 걸러냄 |
+| 달러인덱스는 **일별 계열인데 게시가 주 1회**(금요일 기준) | 자료 주기 ≠ 발표 주기를 계열 메타에 분리 기록 |
+| 금리와 지수를 같은 식으로 다루면 틀린다 | `change_mode` 분리 — 금리·실업률은 **%p 차이**, 지수·가격은 **% 변화**, 물가지수는 **전년동월비** |
+| 원천이 바뀌어 엉뚱한 값이 조용히 섞여 든다 | 계열마다 `sane` 범위 — 금리 −1~25%, 환율 500~3,000원, CPI 50~500pt. 벗어나면 **중단** |
+
+받아 온 숫자를 나열하지 않고, **회사가 사업보고서에 스스로 적어 둔 민감도에 현재 수치를 대입**합니다. 기준금리가 2.5%→3.0%로 올랐다면 "이자율 100bp 상승 시 이자비용 338백만원 증가"라는 공시 문구와 곱해 방향과 규모를 함께 적고, 민감도가 공시에 없으면 **규모를 추정하지 않고 산정 불가로 먼저 밝힙니다**. (`scripts/build_snapshot.py`, `scripts/dcf_calculator.py`)
 
 ## 기술 스택
 
